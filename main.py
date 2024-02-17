@@ -299,7 +299,7 @@ def load_config() -> tuple[bool, str, str, str, str | None, Logger]:
         try_login = True
         country = input(
             "Select country (enter two letters) \n" + "\n".join(
-                [key + " " + value for (key, value) in COUNTRIES.items()]))
+                [key + " " + value for (key, value) in COUNTRIES.items()]) + "\n")
         if country not in COUNTRIES:
             country = None
     if not debug:
