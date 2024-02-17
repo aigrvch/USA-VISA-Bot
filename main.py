@@ -23,7 +23,6 @@ DOCUMENT_HEADERS = {
     **DEFAULT_HEADERS,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
               "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
     "Accept-Language": "ru,en;q=0.9,de;q=0.8,bg;q=0.7",
     "Connection": "keep-alive",
     "Sec-Fetch-Dest": "document",
@@ -32,6 +31,10 @@ DOCUMENT_HEADERS = {
     "Cache-Control": "no-store",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Upgrade-Insecure-Requests": "1"
+}
+DOCUMENT_HEADERS_WITH_ENCODING = {
+    **DOCUMENT_HEADERS,
+    "Accept-Encoding": "gzip, deflate, br"
 }
 JSON_HEADERS = {
     **DEFAULT_HEADERS,
@@ -122,7 +125,7 @@ def login(url: str, email: str, password: str) -> dict:
     response = requests.get(f"{url}/users/sign_in", headers={
         "Cookie": "",
         "Referer": f"{url}/users/sign_in",
-        **DOCUMENT_HEADERS
+        **DOCUMENT_HEADERS_WITH_ENCODING
     })
     response.raise_for_status()
 
@@ -153,7 +156,7 @@ def login(url: str, email: str, password: str) -> dict:
 def get_current_appointment_data(url: str, country: str, headers: dict) -> Tuple[datetime | None, str]:
     login_response = requests.get(url, headers={
         **headers,
-        **DOCUMENT_HEADERS
+        **DOCUMENT_HEADERS_WITH_ENCODING
     })
     login_response.raise_for_status()
 
@@ -180,7 +183,7 @@ def get_new_appointment_data(url: str, schedule_id: str, headers: dict) -> tuple
             **headers,
             "Sec-Fetch-User": "?1",
             "Referer": f"{url}/schedule/{schedule_id}/continue_actions",
-            **DOCUMENT_HEADERS
+            **DOCUMENT_HEADERS_WITH_ENCODING
         }
     )
     response.raise_for_status()
@@ -238,6 +241,7 @@ def book(url: str, schedule_id: str, facility_id: str, book_date: str, book_time
             **headers,
             **DOCUMENT_HEADERS,
             "Content-Type": "application/x-www-form-urlencoded",
+            "Cache-Control": "no-store",
             "Sec-Fetch-User": "?1",
             "Origin": f"https://{HOST}",
             "Referer": f"{url}/schedule/{schedule_id}/appointment"
