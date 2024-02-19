@@ -1,10 +1,10 @@
+import getpass
 import os.path
 import re
 import time
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional
 from urllib.parse import urlencode
-import getpass
 
 import requests
 from bs4 import BeautifulSoup
@@ -121,294 +121,291 @@ class Logger:
             print(f"[{datetime.now().isoformat()}] {message}")
 
 
-def login(url: str, email: str, password: str) -> dict:
-    response = requests.get(f"{url}/users/sign_in", headers={
-        "Cookie": "",
-        "Referer": f"{url}/users/sign_in",
-        **DOCUMENT_HEADERS_WITH_ENCODING
-    })
-    response.raise_for_status()
+class Config:
+    def __init__(self, path: str):
+        self.path = path
 
-    cookies = response.headers.get("set-cookie")
+        config_data = self.load()
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    csrf_token = soup.find("meta", {"name": "csrf-token"})["content"]
+        self.email = config_data.get("EMAIL")
+        self.password = config_data.get("PASSWORD")
+        self.country = config_data.get("COUNTRY")
+        self.facility_id = config_data.get("FACILITY_ID")
+        self.debug = config_data.get("DEBUG")
+        self.debug = bool(self.debug) if self.debug else None
 
-    response = requests.post(f"{url}/users/sign_in", headers={
-        **DEFAULT_HEADERS,
-        X_CSRF_TOKEN_HEADER: csrf_token,
-        "Cookie": cookies,
-        "Accept": "*/*;q=0.5, text/javascript, application/javascript, application/ecmascript, "
-                  "application/x-ecmascript",
-        "Referer": f"{url}/users/sign_in",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
-    }, data=urlencode({
-        "user[email]": email,
-        "user[password]": password,
-        "policy_confirmed": "1",
-        "commit": "Sign In"
-    }))
-    response.raise_for_status()
+    def save(self):
+        with open(self.path, "w") as f:
+            f.write(f"EMAIL={self.email}\nPASSWORD={self.password}\nCOUNTRY={self.country}"
+                    f"\nDEBUG={self.debug}\nFACILITY_ID={self.facility_id}")
 
-    return {"Cookie": response.headers.get("set-cookie")}
+    def load(self) -> dict:
+        config_data = dict()
+        if os.path.exists(self.path):
+            with open(self.path, "r") as f:
+                for line in f.readlines():
+                    param = line.strip().split("=", maxsplit=1)
+                    if len(param) == 2:
+                        config_data[param[0].strip()] = param[1].strip()
+        return config_data
 
 
-def get_current_appointment_data(url: str, country: str, headers: dict) -> Tuple[datetime | None, str]:
-    login_response = requests.get(url, headers={
-        **headers,
-        **DOCUMENT_HEADERS_WITH_ENCODING
-    })
-    login_response.raise_for_status()
-
-    login_data = login_response.text
-
-    match = re.search(r"\d{2} \w+?, \d{4}, \d{2}:\d{2}", login_data)
-    current_date_time = None
-    if match:
-        current_date_time = datetime.strptime(match.group(0), "%d %B, %Y, %H:%M")
-
-    match = re.search(rf"href=\"/en-{country}/niv/schedule/(\d+)/continue_actions\">Continue</a>", login_data)
-    if not match:
-        raise NoScheduleIdException()
-
-    schedule_id = match.group(1)
-
-    return current_date_time, schedule_id
+class Appointment:
+    def __init__(self, appointment_date: str, appointment_time: str):
+        self.appointment_date = appointment_date
+        self.appointment_time = appointment_time
 
 
-def get_new_appointment_data(url: str, schedule_id: str, headers: dict) -> tuple[dict, dict]:
-    response = requests.get(
-        f"{url}/schedule/{schedule_id}/appointment",
-        headers={
-            **headers,
-            "Sec-Fetch-User": "?1",
-            "Referer": f"{url}/schedule/{schedule_id}/continue_actions",
+class Bot:
+    def __init__(self, config: Config):
+        self.logger = Logger(config.debug)
+        self.config = config
+        self.url = f"https://{HOST}/en-{config.country}/niv"
+
+        self.headers: Optional[dict] = None
+        self.appointment_datetime: Optional[datetime] = None
+        self.schedule_id: Optional[str] = None
+        self.csrf: Optional[str] = None
+
+    def init(self):
+        self.login()
+        self.init_current_data()
+        self.init_csrf()
+
+    def login(self):
+        self.logger.log("Get sign in")
+        response = requests.get(f"{self.url}/users/sign_in", headers={
+            "Cookie": "",
+            "Referer": f"{self.url}/users/sign_in",
             **DOCUMENT_HEADERS_WITH_ENCODING
-        }
-    )
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    csrf_token = soup.find("meta", {"name": "csrf-token"})["content"]
-
-    locations = (soup
-                 .find("select", {"id": "appointments_consulate_appointment_facility_id"})
-                 .findAll("option"))
-    clear_locations = dict()
-    for location in locations:
-        if location["value"]:
-            clear_locations[location["value"]] = location.text
-
-    return clear_locations, {**headers, X_CSRF_TOKEN_HEADER: csrf_token}
-
-
-def get_available_date(url: str, schedule_id: str, facility_id: str, headers: dict) -> str | None:
-    response = requests.get(
-        f"{url}/schedule/{schedule_id}/appointment/days/{facility_id}.json?appointments[expedite]=false",
-        headers={
-            **headers,
-            **JSON_HEADERS,
-            "Referer": f"{url}/schedule/{schedule_id}/appointment"
-        }
-    )
-    response.raise_for_status()
-
-    data = response.json()
-    return data[0]["date"] if len(data) > 0 else None
-
-
-def get_available_time(url: str, schedule_id: str, facility_id: str, date: str, headers: dict) -> str:
-    response = requests.get(
-        f"{url}/schedule/{schedule_id}/appointment/times/{facility_id}.json?date={date}&"
-        f"appointments[expedite]=false",
-        headers={
-            **headers,
-            **JSON_HEADERS,
-            "Referer": f"{url}/schedule/{schedule_id}/appointment"
-        }
-    )
-    response.raise_for_status()
-
-    data = response.json()
-
-    return data["business_times"][0] or data["available_times"][0]
-
-
-def book(url: str, schedule_id: str, facility_id: str, book_date: str, book_time: str, headers: dict):
-    response = requests.post(
-        f"{url}/schedule/{schedule_id}/appointment",
-        headers={
-            **headers,
-            **DOCUMENT_HEADERS,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Cache-Control": "no-store",
-            "Sec-Fetch-User": "?1",
-            "Origin": f"https://{HOST}",
-            "Referer": f"{url}/schedule/{schedule_id}/appointment"
-        },
-        data=urlencode({
-            "authenticity_token": headers[X_CSRF_TOKEN_HEADER],
-            "confirmed_limit_message": "1",
-            "use_consulate_appointment_capacity": "true",
-            "appointments[consulate_appointment][facility_id]": facility_id,
-            "appointments[consulate_appointment][date]": book_date,
-            "appointments[consulate_appointment][time]": book_time
         })
-    )
-    response.raise_for_status()
+        response.raise_for_status()
 
+        cookies = response.headers.get("set-cookie")
 
-def get_data(logger: Logger, url: str, email: str, password: str, country: str) \
-        -> tuple[datetime | None, str, dict, dict]:
-    logger.log("Logging in")
-    headers = login(url, email, password)
+        soup = BeautifulSoup(response.text, "html.parser")
+        csrf_token = soup.find("meta", {"name": "csrf-token"})["content"]
 
-    logger.log("Get appointment data")
-    (current_date_time, schedule_id) = get_current_appointment_data(url, country, headers)
+        self.logger.log("Post sing in")
+        response = requests.post(f"{self.url}/users/sign_in", headers={
+            **DEFAULT_HEADERS,
+            X_CSRF_TOKEN_HEADER: csrf_token,
+            "Cookie": cookies,
+            "Accept": "*/*;q=0.5, text/javascript, application/javascript, application/ecmascript, "
+                      "application/x-ecmascript",
+            "Referer": f"{self.url}/users/sign_in",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+        }, data=urlencode({
+            "user[email]": self.config.email,
+            "user[password]": self.config.password,
+            "policy_confirmed": "1",
+            "commit": "Sign In"
+        }))
+        response.raise_for_status()
 
-    logger.log("Get new appointment data")
-    (locations, headers) = get_new_appointment_data(url, schedule_id, headers)
+        self.headers = {"Cookie": response.headers.get("set-cookie")}
 
-    return current_date_time, schedule_id, headers, locations
+    def init_current_data(self):
+        self.logger.log("Get current appointment")
+        response = requests.get(self.url, headers={
+            **self.headers,
+            **DOCUMENT_HEADERS_WITH_ENCODING
+        })
+        response.raise_for_status()
 
+        match = re.search(
+            rf"href=\"/en-{self.config.country}/niv/schedule/(\d+)/continue_actions\">Continue</a>",
+            response.text
+        )
+        if not match:
+            raise NoScheduleIdException()
+        self.schedule_id = match.group(1)
 
-def load_config() -> tuple[bool, str, str, str, str | None, Logger]:
-    config = dict()
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            for line in f.readlines():
-                param = line.strip().split("=", maxsplit=1)
-                if len(param) == 2:
-                    config[param[0].strip()] = param[1].strip()
+        match = re.search(r"\d{2} \w+?, \d{4}, \d{2}:\d{2}", response.text)
+        if match:
+            self.appointment_datetime = datetime.strptime(match.group(0), "%d %B, %Y, %H:%M")
 
-    email = config.get("EMAIL")
-    password = config.get("PASSWORD")
-    country = config.get("COUNTRY")
-    facility_id = config.get("FACILITY_ID")
-    debug = bool(config.get("DEBUG")) if config.get("DEBUG") else None
+    def init_csrf(self):
+        self.logger.log("Init csrf")
+        self.csrf = self.load_change_appointment_page().find("meta", {"name": "csrf-token"})["content"]
+        self.headers = {**self.headers, X_CSRF_TOKEN_HEADER: self.csrf}
 
-    try_login = False
+    def get_available_facility_id(self):
+        self.logger.log("Get facility id list")
+        locations = (self.load_change_appointment_page()
+                     .find("select", {"id": "appointments_consulate_appointment_facility_id"})
+                     .findAll("option"))
+        facility_id_to_location = dict()
+        for location in locations:
+            if location["value"]:
+                facility_id_to_location[location["value"]] = location.text
+        return facility_id_to_location
 
-    if not email:
-        try_login = True
-        email = input("Enter email: ")
-    if not password:
-        try_login = True
-        password = getpass.getpass("Enter password: ")
-    while not country:
-        try_login = True
-        country = input(
-            "Select country (enter two letters) \n" + "\n".join(
-                [key + " " + value for (key, value) in COUNTRIES.items()]) + "\n")
-        if country not in COUNTRIES:
-            country = None
-    if not debug:
-        debug = input("Do you want to see all logs (Y/N)?: ").upper() == "Y"
+    def load_change_appointment_page(self) -> BeautifulSoup:
+        self.logger.log("Get new appointment")
+        response = requests.get(
+            f"{self.url}/schedule/{self.schedule_id}/appointment",
+            headers={
+                **self.headers,
+                "Sec-Fetch-User": "?1",
+                "Referer": f"{self.url}/schedule/{self.schedule_id}/continue_actions",
+                **DOCUMENT_HEADERS_WITH_ENCODING
+            }
+        )
+        response.raise_for_status()
+        return BeautifulSoup(response.text, "html.parser")
 
-    return try_login, email, password, country, facility_id, Logger(debug)
+    def get_available_appointment(self) -> Optional[Appointment]:
+        self.logger.log("Get available date")
+        response = requests.get(
+            f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
+            f"{self.config.facility_id}.json?appointments[expedite]=false",
+            headers={
+                **self.headers,
+                **JSON_HEADERS,
+                "Referer": f"{self.url}/schedule/{self.schedule_id}/appointment"
+            }
+        )
+        response.raise_for_status()
 
+        data = response.json()
+        available_date = data[0]["date"] if len(data) > 0 else None
 
-def save_config(email: str, password: str, country: str, facility_id: str, debug: bool):
-    with open("config", "w") as f:
-        f.write(f"EMAIL={email}\nPASSWORD={password}\nCOUNTRY={country}\nDEBUG={debug}\nFACILITY_ID={facility_id}")
+        if not available_date:
+            return None
 
+        self.logger.log("Get available time")
+        response = requests.get(
+            f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.facility_id}.json?date={available_date}&"
+            f"appointments[expedite]=false",
+            headers={
+                **self.headers,
+                **JSON_HEADERS,
+                "Referer": f"{self.url}/schedule/{self.schedule_id}/appointment"
+            }
+        )
+        response.raise_for_status()
 
-def get_facility_id(locations: dict) -> str:
-    if len(locations) > 1:
-        num = None
-        while not num:
-            num = input("Choose city (enter number) \n" +
-                        "\n".join([x[0] + "  " + x[1] for x in locations.items()])) + "\n"
-            if num not in locations:
-                num = None
-        return num
-    else:
-        return next(iter(locations))
+        available_time = data["business_times"][0] or data["available_times"][0]
+
+        if not available_time:
+            return None
+
+        return Appointment(available_date, available_time)
+
+    def book(self, appointment: Appointment):
+        self.logger.log("=====================\n"
+                        "#                   #\n"
+                        "#                   #\n"
+                        "#    Try to book    #\n"
+                        "#                   #\n"
+                        "#                   #\n"
+                        f"# {appointment.appointment_time}  {appointment.appointment_date} #\n"
+                        "#                   #\n"
+                        "#                   #\n"
+                        "=====================", True)
+
+        response = requests.post(
+            f"{self.url}/schedule/{self.schedule_id}/appointment",
+            headers={
+                **self.headers,
+                **DOCUMENT_HEADERS,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Cache-Control": "no-store",
+                "Sec-Fetch-User": "?1",
+                "Origin": f"https://{HOST}",
+                "Referer": f"{self.url}/schedule/{self.schedule_id}/appointment"
+            },
+            data=urlencode({
+                "authenticity_token": self.headers[X_CSRF_TOKEN_HEADER],
+                "confirmed_limit_message": "1",
+                "use_consulate_appointment_capacity": "true",
+                "appointments[consulate_appointment][facility_id]": self.config.facility_id,
+                "appointments[consulate_appointment][date]": appointment.appointment_date,
+                "appointments[consulate_appointment][time]": appointment.appointment_time
+            })
+        )
+        response.raise_for_status()
+
+        self.logger.log("=====================\n"
+                        "#                   #\n"
+                        "#                   #\n"
+                        "#     Booked at     #\n"
+                        "#                   #\n"
+                        "#                   #\n"
+                        f"# {appointment.appointment_time}  {appointment.appointment_date} #\n"
+                        "#                   #\n"
+                        "#                   #\n"
+                        "#  Close window to  #\n"
+                        "#    end awaiting   #\n"
+                        "=====================", True)
+
+    def process(self) -> bool:
+        appointment = self.get_available_appointment()
+        if not appointment:
+            return False
+
+        self.logger.log(f"Nearest: {appointment.appointment_time} {appointment.appointment_date}")
+        if self.appointment_datetime <= datetime.strptime(appointment.appointment_time
+                                                          + " "
+                                                          + appointment.appointment_date,
+                                                          "%H:%M %Y-%m-%d"):
+            return False
+
+        self.book(appointment)
+        return True
 
 
 def main():
-    try_login, email, password, country, facility_id, logger = load_config()
-    url = f"https://{HOST}/en-{country}/niv"
+    config = Config(CONFIG_FILE)
 
-    headers: Optional[dict] = None
-    current_date_time: Optional[datetime] = None
-    schedule_id: Optional[str] = None
+    if not config.email:
+        config.email = input("Enter email: ")
+    if not config.password:
+        config.password = getpass.getpass("Enter password: ")
+    while not config.country:
+        country = input(
+            "Select country (enter two letters) \n" + "\n".join(
+                [key + " " + value for (key, value) in COUNTRIES.items()]) + "\n")
+        if country in COUNTRIES:
+            config.country = country
+    if not config.debug:
+        config.debug = input("Do you want to see all logs (Y/N)?: ").upper() == "Y"
 
-    if try_login:
-        current_date_time, schedule_id, headers, locations = get_data(logger, url, email, password, country)
-        if not facility_id:
-            facility_id = get_facility_id(locations)
-        save_config(email, password, country, facility_id, logger.debug)
+    if not config.facility_id:
+        bot = Bot(config)
+        bot.init()
 
+        locations = bot.get_available_facility_id()
+        if len(locations) == 1:
+            config.facility_id = next(iter(locations))
+        else:
+            facility_id = None
+            while not facility_id:
+                facility_id = input("Choose city (enter number) \n" +
+                                    "\n".join([x[0] + "  " + x[1] for x in locations.items()])) + "\n"
+                if facility_id not in locations:
+                    facility_id = None
+            config.facility_id = facility_id
+
+    config.save()
+
+    bot = Bot(config)
+    logger = Logger(config.debug)
     errors_count = 0
-    no_dates_available_count = 0
-
+    reinit = True
     while True:
         try:
-            if not headers:
-                current_date_time, schedule_id, headers, locations = get_data(logger, url, email, password, country)
-                errors_count = 0
-
-            logger.log("Check available date")
-            available_date = get_available_date(url, schedule_id, facility_id, headers)
-
-            book(url, schedule_id, facility_id, '2024-03-01', '14:00', headers)
-
-            if not available_date:
-                if logger.debug:
-                    logger.log("No dates available")
-                elif no_dates_available_count == 20:
-                    no_dates_available_count = 0
-                    logger.log("No dates available", True)
-                else:
-                    no_dates_available_count += 1
-                time.sleep(3)
-            else:
-                logger.log("Check available time")
-                available_time = get_available_time(url, schedule_id, facility_id, available_date, headers)
-                logger.log(f"Nearest: {available_time} {available_date}")
-
-                if (current_date_time is not None and current_date_time
-                        <= datetime.strptime(available_time + " " + available_date, "%H:%M %Y-%m-%d")):
-                    time.sleep(3)
-                    continue
-
-                logger.log("=====================\n"
-                           "#                   #\n"
-                           "#                   #\n"
-                           "#    Try to book    #\n"
-                           "#                   #\n"
-                           "#                   #\n"
-                           f"# {available_time}  {available_date} #\n"
-                           "#                   #\n"
-                           "#                   #\n"
-                           "=====================", True)
-
-                book(url, schedule_id, facility_id, available_date, available_time, headers)
-
-                logger.log("=====================\n"
-                           "#                   #\n"
-                           "#                   #\n"
-                           "#     Booked at     #\n"
-                           "#                   #\n"
-                           "#                   #\n"
-                           f"# {available_time}  {available_date} #\n"
-                           "#                   #\n"
-                           "#                   #\n"
-                           "#  Close window to  #\n"
-                           "#    end awaiting   #\n"
-                           "=====================", True)
-
-                time.sleep(10)
+            if reinit:
+                bot.init()
+            time.sleep(60 if bot.process() else 3)
+            errors_count = 0
         except Exception as err:
-            headers = None
-            if logger.debug:
-                logger.log(err)
-            elif errors_count % 10 == 0:
-                logger.log(err, True)
+            logger.log(err)
             errors_count += 1
             time.sleep(min(errors_count, 10) * 3)
             logger.log("Trying again")
+            reinit = True
 
 
 if __name__ == "__main__":
