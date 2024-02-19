@@ -8,3 +8,10 @@ python main.py
 ```
 
 Bot will ask email, password and country for login in system
+
+## Build exe
+
+```sh
+pip install pyinstaller
+pyinstaller -F main.py
+```
