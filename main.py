@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
+from requests import HTTPError
 
 HOST = "ais.usvisa-info.com"
 DEFAULT_HEADERS = {
@@ -23,6 +24,7 @@ DOCUMENT_HEADERS = {
     **DEFAULT_HEADERS,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
               "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
     "Accept-Language": "ru,en;q=0.9,de;q=0.8,bg;q=0.7",
     "Connection": "keep-alive",
     "Sec-Fetch-Dest": "document",
@@ -31,10 +33,6 @@ DOCUMENT_HEADERS = {
     "Cache-Control": "no-store",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Upgrade-Insecure-Requests": "1"
-}
-DOCUMENT_HEADERS_WITH_ENCODING = {
-    **DOCUMENT_HEADERS,
-    "Accept-Encoding": "gzip, deflate, br"
 }
 JSON_HEADERS = {
     **DEFAULT_HEADERS,
@@ -116,7 +114,7 @@ class Logger:
     def __init__(self, debug: bool = True):
         self.debug = debug
 
-    def log(self, message: str | Exception, force: bool = False):
+    def __call__(self, message: str | Exception, force: bool = False):
         if self.debug or force:
             print(f"[{datetime.now().isoformat()}] {message}")
 
@@ -136,8 +134,10 @@ class Config:
 
     def save(self):
         with open(self.path, "w") as f:
-            f.write(f"EMAIL={self.email}\nPASSWORD={self.password}\nCOUNTRY={self.country}"
-                    f"\nDEBUG={self.debug}\nFACILITY_ID={self.facility_id}")
+            f.write(
+                f"EMAIL={self.email}\nPASSWORD={self.password}\nCOUNTRY={self.country}"
+                f"\nDEBUG={self.debug}\nFACILITY_ID={self.facility_id}"
+            )
 
     def load(self) -> dict:
         config_data = dict()
@@ -173,12 +173,15 @@ class Bot:
         self.init_csrf()
 
     def login(self):
-        self.logger.log("Get sign in")
-        response = requests.get(f"{self.url}/users/sign_in", headers={
-            "Cookie": "",
-            "Referer": f"{self.url}/users/sign_in",
-            **DOCUMENT_HEADERS_WITH_ENCODING
-        })
+        self.logger("Get sign in")
+        response = requests.get(
+            f"{self.url}/users/sign_in",
+            headers={
+                "Cookie": "",
+                "Referer": f"{self.url}/users/sign_in",
+                **DOCUMENT_HEADERS
+            }
+        )
         response.raise_for_status()
 
         cookies = response.headers.get("set-cookie")
@@ -186,31 +189,38 @@ class Bot:
         soup = BeautifulSoup(response.text, "html.parser")
         csrf_token = soup.find("meta", {"name": "csrf-token"})["content"]
 
-        self.logger.log("Post sing in")
-        response = requests.post(f"{self.url}/users/sign_in", headers={
-            **DEFAULT_HEADERS,
-            X_CSRF_TOKEN_HEADER: csrf_token,
-            "Cookie": cookies,
-            "Accept": "*/*;q=0.5, text/javascript, application/javascript, application/ecmascript, "
-                      "application/x-ecmascript",
-            "Referer": f"{self.url}/users/sign_in",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
-        }, data=urlencode({
-            "user[email]": self.config.email,
-            "user[password]": self.config.password,
-            "policy_confirmed": "1",
-            "commit": "Sign In"
-        }))
+        self.logger("Post sing in")
+        response = requests.post(
+            f"{self.url}/users/sign_in",
+            headers={
+                **DEFAULT_HEADERS,
+                X_CSRF_TOKEN_HEADER: csrf_token,
+                "Cookie": cookies,
+                "Accept": "*/*;q=0.5, text/javascript, application/javascript, application/ecmascript, "
+                          "application/x-ecmascript",
+                "Referer": f"{self.url}/users/sign_in",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+            },
+            data=urlencode({
+                "user[email]": self.config.email,
+                "user[password]": self.config.password,
+                "policy_confirmed": "1",
+                "commit": "Sign In"
+            })
+        )
         response.raise_for_status()
 
         self.headers = {"Cookie": response.headers.get("set-cookie")}
 
     def init_current_data(self):
-        self.logger.log("Get current appointment")
-        response = requests.get(self.url, headers={
-            **self.headers,
-            **DOCUMENT_HEADERS_WITH_ENCODING
-        })
+        self.logger("Get current appointment")
+        response = requests.get(
+            self.url,
+            headers={
+                **self.headers,
+                **DOCUMENT_HEADERS
+            }
+        )
         response.raise_for_status()
 
         match = re.search(
@@ -226,12 +236,12 @@ class Bot:
             self.appointment_datetime = datetime.strptime(match.group(0), "%d %B, %Y, %H:%M")
 
     def init_csrf(self):
-        self.logger.log("Init csrf")
+        self.logger("Init csrf")
         self.csrf = self.load_change_appointment_page().find("meta", {"name": "csrf-token"})["content"]
         self.headers = {**self.headers, X_CSRF_TOKEN_HEADER: self.csrf}
 
     def get_available_facility_id(self):
-        self.logger.log("Get facility id list")
+        self.logger("Get facility id list")
         locations = (self.load_change_appointment_page()
                      .find("select", {"id": "appointments_consulate_appointment_facility_id"})
                      .findAll("option"))
@@ -242,21 +252,21 @@ class Bot:
         return facility_id_to_location
 
     def load_change_appointment_page(self) -> BeautifulSoup:
-        self.logger.log("Get new appointment")
+        self.logger("Get new appointment")
         response = requests.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment",
             headers={
                 **self.headers,
                 "Sec-Fetch-User": "?1",
                 "Referer": f"{self.url}/schedule/{self.schedule_id}/continue_actions",
-                **DOCUMENT_HEADERS_WITH_ENCODING
+                **DOCUMENT_HEADERS
             }
         )
         response.raise_for_status()
         return BeautifulSoup(response.text, "html.parser")
 
     def get_available_appointment(self) -> Optional[Appointment]:
-        self.logger.log("Get available date")
+        self.logger("Get available date")
         response = requests.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
             f"{self.config.facility_id}.json?appointments[expedite]=false",
@@ -274,10 +284,10 @@ class Bot:
         if not available_date:
             return None
 
-        self.logger.log("Get available time")
+        self.logger("Get available time")
         response = requests.get(
-            f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.facility_id}.json?date={available_date}&"
-            f"appointments[expedite]=false",
+            f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.facility_id}.json?"
+            f"date={available_date}&appointments[expedite]=false",
             headers={
                 **self.headers,
                 **JSON_HEADERS,
@@ -286,6 +296,7 @@ class Bot:
         )
         response.raise_for_status()
 
+        data = response.json()
         available_time = data["business_times"][0] or data["available_times"][0]
 
         if not available_time:
@@ -294,16 +305,19 @@ class Bot:
         return Appointment(available_date, available_time)
 
     def book(self, appointment: Appointment):
-        self.logger.log("=====================\n"
-                        "#                   #\n"
-                        "#                   #\n"
-                        "#    Try to book    #\n"
-                        "#                   #\n"
-                        "#                   #\n"
-                        f"# {appointment.appointment_time}  {appointment.appointment_date} #\n"
-                        "#                   #\n"
-                        "#                   #\n"
-                        "=====================", True)
+        self.logger(
+            "=====================\n"
+            "#                   #\n"
+            "#                   #\n"
+            "#    Try to book    #\n"
+            "#                   #\n"
+            "#                   #\n"
+            f"# {appointment.appointment_time}  {appointment.appointment_date} #\n"
+            "#                   #\n"
+            "#                   #\n"
+            "=====================",
+            True
+        )
 
         response = requests.post(
             f"{self.url}/schedule/{self.schedule_id}/appointment",
@@ -327,32 +341,38 @@ class Bot:
         )
         response.raise_for_status()
 
-        self.logger.log("=====================\n"
-                        "#                   #\n"
-                        "#                   #\n"
-                        "#     Booked at     #\n"
-                        "#                   #\n"
-                        "#                   #\n"
-                        f"# {appointment.appointment_time}  {appointment.appointment_date} #\n"
-                        "#                   #\n"
-                        "#                   #\n"
-                        "#  Close window to  #\n"
-                        "#    end awaiting   #\n"
-                        "=====================", True)
+        self.logger(
+            "=====================\n"
+            "#                   #\n"
+            "#                   #\n"
+            "#     Booked at     #\n"
+            "#                   #\n"
+            "#                   #\n"
+            f"# {appointment.appointment_time}  {appointment.appointment_date} #\n"
+            "#                   #\n"
+            "#                   #\n"
+            "#  Close window to  #\n"
+            "#    end awaiting   #\n"
+            "=====================",
+            True
+        )
 
     def process(self) -> bool:
         appointment = self.get_available_appointment()
         if not appointment:
+            self.logger("No available date")
             return False
 
-        self.logger.log(f"Nearest: {appointment.appointment_time} {appointment.appointment_date}")
-        if self.appointment_datetime <= datetime.strptime(appointment.appointment_time
-                                                          + " "
-                                                          + appointment.appointment_date,
-                                                          "%H:%M %Y-%m-%d"):
+        available_datetime = datetime.strptime(
+            appointment.appointment_time + " " + appointment.appointment_date,
+            "%H:%M %Y-%m-%d"
+        )
+        self.logger(f"Nearest: {appointment.appointment_time} {appointment.appointment_date}")
+        if self.appointment_datetime <= available_datetime:
             return False
 
         self.book(appointment)
+        self.appointment_datetime = available_datetime
         return True
 
 
@@ -366,7 +386,8 @@ def main():
     while not config.country:
         country = input(
             "Select country (enter two letters) \n" + "\n".join(
-                [key + " " + value for (key, value) in COUNTRIES.items()]) + "\n")
+                [key + " " + value for (key, value) in COUNTRIES.items()]) + "\n"
+        )
         if country in COUNTRIES:
             config.country = country
     if not config.debug:
@@ -382,8 +403,10 @@ def main():
         else:
             facility_id = None
             while not facility_id:
-                facility_id = input("Choose city (enter number) \n" +
-                                    "\n".join([x[0] + "  " + x[1] for x in locations.items()])) + "\n"
+                facility_id = input(
+                    "Choose city (enter number) \n" +
+                    "\n".join([x[0] + "  " + x[1] for x in locations.items()])
+                ) + "\n"
                 if facility_id not in locations:
                     facility_id = None
             config.facility_id = facility_id
@@ -393,19 +416,27 @@ def main():
     bot = Bot(config)
     logger = Logger(config.debug)
     errors_count = 0
+    no_errors_count = 0
+
     reinit = True
     while True:
         try:
             if reinit:
                 bot.init()
+                reinit = False
             time.sleep(60 if bot.process() else 3)
-            errors_count = 0
+
+            no_errors_count += 1
+            if no_errors_count >= 5:
+                errors_count = max(0, errors_count - 1)
         except Exception as err:
-            logger.log(err)
-            errors_count += 1
-            time.sleep(min(errors_count, 10) * 3)
-            logger.log("Trying again")
-            reinit = True
+            if isinstance(err, HTTPError) and err.response.status_code == 401:
+                reinit = True
+            logger(err)
+            errors_count = min(errors_count + 1, 600)
+            no_errors_count = 0
+            time.sleep(errors_count * 3)
+            logger("Trying again")
 
 
 if __name__ == "__main__":
