@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
-from requests import HTTPError
+from requests import HTTPError, Response
 
 HOST = "ais.usvisa-info.com"
 DEFAULT_HEADERS = {
@@ -46,6 +46,7 @@ JSON_HEADERS = {
     "Sec-Fetch-Site": "same-origin"
 }
 X_CSRF_TOKEN_HEADER = "X-CSRF-Token"
+COOKIE_HEADER = "Cookie"
 COUNTRIES = {
     "ar": "Argentina",
     "ec": "Ecuador",
@@ -103,6 +104,12 @@ COUNTRIES = {
     "zm": "Zambia",
 }
 CONFIG_FILE = "config"
+DELAY_SECONDS = 5 * 60
+DELAY_AFTER_BOOK_SECONDS = 2 * 60 * 60
+MIN_ERRORS_TO_DECREASE_COUNTER = 5
+UNAUTHORIZED_STATUS = 401
+MAX_ERROR_DELAY_SECONDS = 4 * 60 * 60
+HTML_PARSER = "html.parser"
 
 
 class NoScheduleIdException(Exception):
@@ -165,19 +172,18 @@ class Bot:
         self.headers: Optional[dict] = None
         self.appointment_datetime: Optional[datetime] = None
         self.schedule_id: Optional[str] = None
-        self.csrf: Optional[str] = None
 
     def init(self):
         self.login()
         self.init_current_data()
-        self.init_csrf()
+        self.init_csrf_and_cookie()
 
     def login(self):
         self.logger("Get sign in")
         response = requests.get(
             f"{self.url}/users/sign_in",
             headers={
-                "Cookie": "",
+                COOKIE_HEADER: "",
                 "Referer": f"{self.url}/users/sign_in",
                 **DOCUMENT_HEADERS
             }
@@ -186,7 +192,7 @@ class Bot:
 
         cookies = response.headers.get("set-cookie")
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(response.text, HTML_PARSER)
         csrf_token = soup.find("meta", {"name": "csrf-token"})["content"]
 
         self.logger("Post sing in")
@@ -195,7 +201,7 @@ class Bot:
             headers={
                 **DEFAULT_HEADERS,
                 X_CSRF_TOKEN_HEADER: csrf_token,
-                "Cookie": cookies,
+                COOKIE_HEADER: cookies,
                 "Accept": "*/*;q=0.5, text/javascript, application/javascript, application/ecmascript, "
                           "application/x-ecmascript",
                 "Referer": f"{self.url}/users/sign_in",
@@ -210,7 +216,7 @@ class Bot:
         )
         response.raise_for_status()
 
-        self.headers = {"Cookie": response.headers.get("set-cookie")}
+        self.headers = {COOKIE_HEADER: response.headers.get("set-cookie")}
 
     def init_current_data(self):
         self.logger("Get current appointment")
@@ -235,14 +241,18 @@ class Bot:
         if match:
             self.appointment_datetime = datetime.strptime(match.group(0), "%d %B, %Y, %H:%M")
 
-    def init_csrf(self):
+    def init_csrf_and_cookie(self):
         self.logger("Init csrf")
-        self.csrf = self.load_change_appointment_page().find("meta", {"name": "csrf-token"})["content"]
-        self.headers = {**self.headers, X_CSRF_TOKEN_HEADER: self.csrf}
+        response = self.load_change_appointment_page()
+        csrf = BeautifulSoup(response.text, HTML_PARSER).find("meta", {"name": "csrf-token"})["content"]
+        self.headers = {
+            COOKIE_HEADER: response.headers.get("set-cookie"),
+            X_CSRF_TOKEN_HEADER: csrf
+        }
 
     def get_available_facility_id(self):
         self.logger("Get facility id list")
-        locations = (self.load_change_appointment_page()
+        locations = (BeautifulSoup(self.load_change_appointment_page().text, HTML_PARSER)
                      .find("select", {"id": "appointments_consulate_appointment_facility_id"})
                      .findAll("option"))
         facility_id_to_location = dict()
@@ -251,7 +261,7 @@ class Bot:
                 facility_id_to_location[location["value"]] = location.text
         return facility_id_to_location
 
-    def load_change_appointment_page(self) -> BeautifulSoup:
+    def load_change_appointment_page(self) -> Response:
         self.logger("Get new appointment")
         response = requests.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment",
@@ -263,7 +273,7 @@ class Bot:
             }
         )
         response.raise_for_status()
-        return BeautifulSoup(response.text, "html.parser")
+        return response
 
     def get_available_appointment(self) -> Optional[Appointment]:
         self.logger("Get available date")
@@ -424,18 +434,18 @@ def main():
             if reinit:
                 bot.init()
                 reinit = False
-            time.sleep(60 if bot.process() else 3)
+            time.sleep(DELAY_AFTER_BOOK_SECONDS if bot.process() else DELAY_SECONDS)
 
             no_errors_count += 1
-            if no_errors_count >= 5:
+            if no_errors_count >= MIN_ERRORS_TO_DECREASE_COUNTER:
                 errors_count = max(0, errors_count - 1)
         except Exception as err:
-            if isinstance(err, HTTPError) and err.response.status_code == 401:
+            if isinstance(err, HTTPError) and err.response.status_code == UNAUTHORIZED_STATUS:
                 reinit = True
             logger(err)
-            errors_count = min(errors_count + 1, 600)
+            errors_count += 1
             no_errors_count = 0
-            time.sleep(errors_count * 3)
+            time.sleep(min(MAX_ERROR_DELAY_SECONDS, errors_count * DELAY_SECONDS))
             logger("Trying again")
 
 
