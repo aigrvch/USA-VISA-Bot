@@ -237,7 +237,7 @@ class Bot:
             raise NoScheduleIdException()
         self.schedule_id = match.group(1)
 
-        match = re.search(r"\d{2} \w+?, \d{4}, \d{2}:\d{2}", response.text)
+        match = re.search(r"\d{1,2} \w+?, \d{4}, \d{1,2}:\d{1,2}", response.text)
         if match:
             self.appointment_datetime = datetime.strptime(match.group(0), "%d %B, %Y, %H:%M")
 
@@ -367,7 +367,7 @@ class Bot:
             True
         )
 
-    def process(self) -> bool:
+    def process(self):
         appointment = self.get_available_appointment()
         if not appointment:
             self.logger("No available date")
@@ -378,7 +378,7 @@ class Bot:
             "%H:%M %Y-%m-%d"
         )
         self.logger(f"Nearest: {appointment.appointment_time} {appointment.appointment_date}")
-        if self.appointment_datetime <= available_datetime:
+        if self.appointment_datetime and self.appointment_datetime <= available_datetime:
             return False
 
         self.book(appointment)
@@ -426,7 +426,6 @@ def main():
     bot = Bot(config)
     logger = Logger(config.debug)
     errors_count = 0
-    no_errors_count = 0
 
     reinit = True
     while True:
@@ -434,19 +433,18 @@ def main():
             if reinit:
                 bot.init()
                 reinit = False
-            time.sleep(DELAY_AFTER_BOOK_SECONDS if bot.process() else DELAY_SECONDS)
 
-            no_errors_count += 1
-            if no_errors_count >= MIN_ERRORS_TO_DECREASE_COUNTER:
-                errors_count = max(0, errors_count - 1)
+            bot.process()
+
+            errors_count = max(0, errors_count - 1)
         except Exception as err:
-            if isinstance(err, HTTPError) and err.response.status_code == UNAUTHORIZED_STATUS:
-                reinit = True
             logger(err)
             errors_count += 1
-            no_errors_count = 0
-            time.sleep(min(MAX_ERROR_DELAY_SECONDS, errors_count * DELAY_SECONDS))
-            logger("Trying again")
+
+            if isinstance(err, HTTPError) and err.response.status_code == UNAUTHORIZED_STATUS:
+                reinit = True
+
+        time.sleep(DELAY_SECONDS + min(MAX_ERROR_DELAY_SECONDS, errors_count * DELAY_SECONDS))
 
 
 if __name__ == "__main__":
