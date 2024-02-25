@@ -437,10 +437,11 @@ def main():
             errors_count = max(0, errors_count - 1)
         except Exception as err:
             logger(err)
-            errors_count += 1
 
             if isinstance(err, HTTPError) and err.response.status_code == UNAUTHORIZED_STATUS:
                 reinit = True
+            else:
+                errors_count += 1
 
         time.sleep(DELAY_SECONDS + min(MAX_ERROR_DELAY_SECONDS, errors_count * DELAY_SECONDS))
 
