@@ -1,5 +1,9 @@
 # Usa VISA appointment bot for [AIS](https://ais.usvisa-info.com/) region
 
+## Requirements
+
+- python >= 3.10 (Wasn't tested on python < 3.10)
+
 ## Usage
 
 ```sh
