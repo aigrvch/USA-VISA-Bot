@@ -104,7 +104,6 @@ COUNTRIES = {
     "zm": "Zambia",
 }
 CONFIG_FILE = "config"
-DELAY_SECONDS = 5 * 60
 UNAUTHORIZED_STATUS = 401
 MAX_ERROR_DELAY_SECONDS = 4 * 60 * 60
 HTML_PARSER = "html.parser"
@@ -134,6 +133,11 @@ class Config:
         self.password = config_data.get("PASSWORD")
         self.country = config_data.get("COUNTRY")
         self.facility_id = config_data.get("FACILITY_ID")
+        try:
+            self.delay_seconds = config_data.get("DELAY_SECONDS")
+            self.delay_seconds = int(self.delay_seconds) if self.delay_seconds else None
+        except ValueError:
+            self.delay_seconds = None
         self.debug = config_data.get("DEBUG")
         self.debug = bool(self.debug) if self.debug else None
 
@@ -141,7 +145,7 @@ class Config:
         with open(self.path, "w") as f:
             f.write(
                 f"EMAIL={self.email}\nPASSWORD={self.password}\nCOUNTRY={self.country}"
-                f"\nDEBUG={self.debug}\nFACILITY_ID={self.facility_id}"
+                f"\nDEBUG={self.debug}\nFACILITY_ID={self.facility_id}\nDELAY_SECONDS={self.delay_seconds}"
             )
 
     def load(self) -> dict:
@@ -387,6 +391,11 @@ class Bot:
 def main():
     config = Config(CONFIG_FILE)
 
+    while not config.delay_seconds:
+        try:
+            config.delay_seconds = int(input("Delay seconds: "))
+        except ValueError:
+            config.delay_seconds = None
     if not config.email:
         config.email = input("Enter email: ")
     if not config.password:
@@ -443,7 +452,7 @@ def main():
             else:
                 errors_count += 1
 
-        time.sleep(DELAY_SECONDS + min(MAX_ERROR_DELAY_SECONDS, errors_count * DELAY_SECONDS))
+        time.sleep(config.delay_seconds + min(MAX_ERROR_DELAY_SECONDS, errors_count * config.delay_seconds))
 
 
 if __name__ == "__main__":
