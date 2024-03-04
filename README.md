@@ -32,4 +32,5 @@ pyinstaller -F main.py
 ## Question? Contact me
 
 Telegram: https://t.me/aigrvch
+
 Email: a.igrvch@gmail.com
