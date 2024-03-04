@@ -133,6 +133,8 @@ class Config:
         self.password = config_data.get("PASSWORD")
         self.country = config_data.get("COUNTRY")
         self.facility_id = config_data.get("FACILITY_ID")
+        self.min_date = config_data.get("MIN_DATE")
+        self.min_date = datetime.strptime(self.min_date, "%d.%m.%Y") if self.min_date else None
         try:
             self.delay_seconds = config_data.get("DELAY_SECONDS")
             self.delay_seconds = int(self.delay_seconds) if self.delay_seconds else None
@@ -146,6 +148,7 @@ class Config:
             f.write(
                 f"EMAIL={self.email}\nPASSWORD={self.password}\nCOUNTRY={self.country}"
                 f"\nDEBUG={self.debug}\nFACILITY_ID={self.facility_id}\nDELAY_SECONDS={self.delay_seconds}"
+                f"\nMIN_DATE={self.min_date.strftime('%d.%m.%Y')}"
             )
 
     def load(self) -> dict:
@@ -369,7 +372,7 @@ class Bot:
             True
         )
 
-    def process(self):
+    def iterate(self):
         appointment = self.get_available_appointment()
         if not appointment:
             self.logger("No available date")
@@ -379,13 +382,47 @@ class Bot:
             appointment.appointment_time + " " + appointment.appointment_date,
             "%H:%M %Y-%m-%d"
         )
-        self.logger(f"Nearest: {appointment.appointment_time} {appointment.appointment_date}")
+        self.logger(f"Nearest date and time: {appointment.appointment_time} {appointment.appointment_date}")
         if self.appointment_datetime and self.appointment_datetime <= available_datetime:
             return False
 
+        if self.config.min_date > self.appointment_datetime:
+            return False
+
         self.book(appointment)
-        self.appointment_datetime = available_datetime
+
+        self.init()
+
+        self.logger(f"Current appointment date and time: {self.appointment_datetime.strftime('%H:%M %Y-%m-%d')}")
         return True
+
+    def process(self):
+        errors_count = 0
+
+        reinit = True
+        while True:
+            if self.appointment_datetime and self.appointment_datetime < self.config.min_date:
+                self.logger("Current appointment date and time lower then specified minimal date")
+                return
+
+            try:
+                if reinit:
+                    self.init()
+                    reinit = False
+
+                self.iterate()
+
+                errors_count = max(0, errors_count - 1)
+            except Exception as err:
+                self.logger(err)
+
+                if isinstance(err, HTTPError) and err.response.status_code == UNAUTHORIZED_STATUS:
+                    reinit = True
+                else:
+                    errors_count += 1
+
+            time.sleep(
+                self.config.delay_seconds + min(MAX_ERROR_DELAY_SECONDS, errors_count * self.config.delay_seconds))
 
 
 def main():
@@ -409,6 +446,16 @@ def main():
             config.country = country
     if not config.debug:
         config.debug = input("Do you want to see all logs (Y/N)?: ").upper() == "Y"
+    while not config.min_date:
+        min_date = input(
+            "Enter minimal appointment date in format day.month.year (example 10.01.2002) or leave blank")
+        if min_date:
+            try:
+                config.min_date = datetime.strptime(min_date, "%d.%m.%Y")
+            except ValueError:
+                pass
+        else:
+            config.min_date = datetime.now()
 
     if not config.facility_id:
         bot = Bot(config)
@@ -430,29 +477,7 @@ def main():
 
     config.save()
 
-    bot = Bot(config)
-    logger = Logger(config.debug)
-    errors_count = 0
-
-    reinit = True
-    while True:
-        try:
-            if reinit:
-                bot.init()
-                reinit = False
-
-            bot.process()
-
-            errors_count = max(0, errors_count - 1)
-        except Exception as err:
-            logger(err)
-
-            if isinstance(err, HTTPError) and err.response.status_code == UNAUTHORIZED_STATUS:
-                reinit = True
-            else:
-                errors_count += 1
-
-        time.sleep(config.delay_seconds + min(MAX_ERROR_DELAY_SECONDS, errors_count * config.delay_seconds))
+    Bot(config).process()
 
 
 if __name__ == "__main__":

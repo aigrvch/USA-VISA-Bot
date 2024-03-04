@@ -22,6 +22,13 @@ pip install pyinstaller
 pyinstaller -F main.py
 ```
 
+## FAQ
+
+1. Delete file `config` to reset configuration.
+2. Application ask about delay in seconds. It means, how fast bot will be asks about new appointment.
+3. When bot gets error from service, it increases delay by formula `count_of_error * delay`. Delay will be decrease,
+   when bot success send request to service.
+
 ## Question? Contact me
 
 Telegram: https://t.me/aigrvch
