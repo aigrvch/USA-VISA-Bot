@@ -372,7 +372,7 @@ class Bot:
             True
         )
 
-    def iterate(self):
+    def iterate(self) -> bool:
         appointment = self.get_available_appointment()
         if not appointment:
             self.logger("No available date")
@@ -390,10 +390,6 @@ class Bot:
             return False
 
         self.book(appointment)
-
-        self.init()
-
-        self.logger(f"Current appointment date and time: {self.appointment_datetime.strftime('%H:%M %Y-%m-%d')}")
         return True
 
     def process(self):
@@ -408,9 +404,12 @@ class Bot:
             try:
                 if reinit:
                     self.init()
+                    self.logger(
+                        f"Current appointment date and time: {self.appointment_datetime.strftime('%H:%M %Y-%m-%d')}")
                     reinit = False
 
-                self.iterate()
+                if self.iterate():
+                    reinit = True
 
                 errors_count = max(0, errors_count - 1)
             except Exception as err:
