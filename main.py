@@ -386,7 +386,7 @@ class Bot:
         if self.appointment_datetime and self.appointment_datetime <= available_datetime:
             return False
 
-        if self.config.min_date > self.appointment_datetime:
+        if self.config.min_date > available_datetime:
             return False
 
         self.book(appointment)
