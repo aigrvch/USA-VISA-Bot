@@ -4,3 +4,4 @@ config
 /build/
 /dist/
 /main.spec
+/proxy
