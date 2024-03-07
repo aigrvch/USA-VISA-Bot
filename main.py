@@ -3,7 +3,7 @@ import os.path
 import re
 import time
 from datetime import datetime
-from typing import Optional, Any, Callable, TypeVar
+from typing import Optional, Callable, TypeVar
 from urllib.parse import urlencode
 
 import requests
@@ -120,11 +120,9 @@ ERROR_START_STATUS = 400
 UNAUTHORIZED_STATUS = 401
 TRUE = "True"
 HTML_PARSER = "html.parser"
-PING_DELAY = 2 * 60
 T = TypeVar('T')
 
 CONFIG_FILE = "config"
-PROXY_FILE = "proxy"
 TIMEOUT = 4
 MAX_ERROR_DELAY = 4 * 60 * 60
 
@@ -132,10 +130,6 @@ MAX_ERROR_DELAY = 4 * 60 * 60
 class NoScheduleIdException(Exception):
     def __init__(self):
         super().__init__("No schedule id")
-
-
-class UseMainBotException(Exception):
-    pass
 
 
 class Logger:
@@ -148,7 +142,7 @@ class Logger:
 
 
 class Config:
-    def __init__(self, config_path: str, proxy_path: str):
+    def __init__(self, config_path: str):
         self.config_path = config_path
 
         config_data = dict()
@@ -218,30 +212,9 @@ class Config:
             debug = debug == TRUE
         self.debug = debug
 
-        use_proxy = config_data.get("USE_PROXY")
-        if use_proxy is None:
-            use_proxy = input("Do you want to use proxy (Y/N)?: ").upper() == "Y"
-        else:
-            use_proxy = use_proxy == TRUE
-        self.use_proxy = use_proxy
-
         self.facility_id: Optional[str] = config_data.get("FACILITY_ID")
 
         self.__save()
-
-        if self.use_proxy:
-            while not os.path.exists(proxy_path):
-                print(
-                    f"Create file '{proxy_path}' with proxies list. File's format is:\n"
-                    f"socks5://user:password@192.168.1.11:1234\n"
-                    f"socks5://user2:password2@192.168.1.12:1235"
-                )
-                time.sleep(5)
-
-            with open(proxy_path, "r") as f:
-                self.proxies = [x.strip() for x in f.readlines()]
-        else:
-            self.proxies = []
 
     def set_facility_id(self, locations: dict[str, str]):
         if len(locations) == 1:
@@ -264,81 +237,28 @@ class Config:
             f.write(
                 f"EMAIL={self.email}\nPASSWORD={self.password}\nCOUNTRY={self.country}"
                 f"\nDEBUG={self.debug}\nFACILITY_ID={self.facility_id}\nDELAY_SECONDS={self.delay_seconds}"
-                f"\nMIN_DATE={self.min_date.strftime(DATE_FORMAT)}\nUSE_PROXY={self.use_proxy}"
+                f"\nMIN_DATE={self.min_date.strftime(DATE_FORMAT)}"
             )
-
-
-class Client:
-    def __init__(self, timeout: int, proxy: Optional[str] = None):
-        self.timeout = timeout
-        self.proxy = proxy
-
-    def post(self, url: str, data: Optional[Any] = None, json: Optional[Any] = None, **kwargs) -> Response:
-        if self.proxy:
-            return requests.post(
-                url=url,
-                data=data,
-                json=json,
-                proxies={"https": self.proxy},
-                verify=False,
-                timeout=self.timeout,
-                **kwargs
-            )
-
-        return requests.post(url=url, data=data, json=json, **kwargs)
-
-    def get(self, url: str, params: Optional[Any] = None, **kwargs) -> Response:
-        if self.proxy:
-            return requests.get(
-                url=url,
-                params=params,
-                proxies={"https": self.proxy},
-                verify=False,
-                timeout=self.timeout,
-                **kwargs
-            )
-
-        return requests.get(url=url, params=params, **kwargs)
 
 
 class Bot:
-    def __init__(
-            self,
-            config: Config,
-            logger: Logger,
-            client: Client,
-            max_error_delay: int,
-            sub_bot: bool = False
-    ):
+    def __init__(self, config: Config, logger: Logger, max_error_delay: int):
         self.logger = logger
-        self.client = client
         self.config = config
         self.max_error_delay = max_error_delay
         self.url = f"https://{HOST}/en-{config.country}/niv"
 
-        self.headers: Optional[dict] = None
         self.appointment_datetime: Optional[datetime] = None
         self.schedule_id: Optional[str] = None
-
-        self.last_ping_time = datetime.now()
-        if self.config.use_proxy and not sub_bot:
-            self.current_sub_bot_index = 0
-            self.sub_bots = []
-            for proxy in self.config.proxies:
-                self.sub_bots.append(Bot(
-                    config,
-                    logger,
-                    Client(self.client.timeout, proxy),
-                    max_error_delay,
-                    True
-                ))
+        self.csrf: Optional[str] = None
+        self.cookie: Optional[str] = None
 
     @staticmethod
     def get_csrf(response: Response) -> str:
         return BeautifulSoup(response.text, HTML_PARSER).find("meta", {"name": "csrf-token"})["content"]
 
     def with_retry(self, request: Callable[[], T]) -> T:
-        if not self.headers or not self.schedule_id:
+        if not self.cookie or not self.schedule_id or not self.csrf:
             self.init()
 
         try:
@@ -355,6 +275,17 @@ class Bot:
             response = request()
         return response
 
+    def headers(self) -> dict[str, str]:
+        headers = dict()
+
+        if self.cookie:
+            headers[COOKIE_HEADER] = self.cookie
+
+        if self.csrf:
+            headers[X_CSRF_TOKEN_HEADER] = self.csrf
+
+        return headers
+
     def init(self):
         self.login()
         self.init_current_data()
@@ -368,7 +299,7 @@ class Bot:
 
     def login(self):
         self.logger("Get sign in")
-        response = self.client.get(
+        response = requests.get(
             f"{self.url}/users/sign_in",
             headers={
                 COOKIE_HEADER: "",
@@ -377,11 +308,10 @@ class Bot:
             }
         )
         response.raise_for_status()
-
         cookies = response.headers.get(SET_COOKIE)
 
         self.logger("Post sing in")
-        response = self.client.post(
+        response = requests.post(
             f"{self.url}/users/sign_in",
             headers={
                 **DEFAULT_HEADERS,
@@ -400,15 +330,14 @@ class Bot:
             })
         )
         response.raise_for_status()
-
-        self.headers = {COOKIE_HEADER: response.headers.get(SET_COOKIE)}
+        self.cookie = response.headers.get(SET_COOKIE)
 
     def init_current_data(self):
         self.logger("Get current appointment")
-        response = self.client.get(
+        response = requests.get(
             self.url,
             headers={
-                **self.headers,
+                **self.headers(),
                 **DOCUMENT_HEADERS
             }
         )
@@ -429,10 +358,8 @@ class Bot:
     def init_csrf_and_cookie(self):
         self.logger("Init csrf")
         response = self.load_change_appointment_page()
-        self.headers = {
-            COOKIE_HEADER: response.headers.get(SET_COOKIE),
-            X_CSRF_TOKEN_HEADER: Bot.get_csrf(response)
-        }
+        self.cookie = response.headers.get(SET_COOKIE)
+        self.csrf = Bot.get_csrf(response)
 
     def get_available_facility_id(self) -> dict[str, str]:
         self.logger("Get facility id list")
@@ -447,10 +374,10 @@ class Bot:
 
     def load_change_appointment_page(self) -> Response:
         self.logger("Get new appointment")
-        response = self.client.get(
+        response = requests.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment",
             headers={
-                **self.headers,
+                **self.headers(),
                 **DOCUMENT_HEADERS,
                 **SEC_FETCH_USER_HEADERS,
                 REFERER: f"{self.url}/schedule/{self.schedule_id}/continue_actions"
@@ -460,36 +387,30 @@ class Bot:
         return response
 
     def get_available_dates(self) -> list[str]:
-        def request() -> Response:
-            self.logger("Get available date")
-            return self.client.get(
-                f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
-                f"{self.config.facility_id}.json?appointments[expedite]=false",
-                headers={
-                    **self.headers,
-                    **JSON_HEADERS,
-                    REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
-                }
-            )
-
-        response = self.with_retry(request)
+        self.logger("Get available date")
+        response = requests.get(
+            f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
+            f"{self.config.facility_id}.json?appointments[expedite]=false",
+            headers={
+                **self.headers(),
+                **JSON_HEADERS,
+                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+            }
+        )
         response.raise_for_status()
         return [x["date"] for x in response.json()]
 
     def get_available_times(self, available_date) -> list[str]:
-        def request() -> Response:
-            self.logger("Get available time")
-            return self.client.get(
-                f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.facility_id}.json?"
-                f"date={available_date}&appointments[expedite]=false",
-                headers={
-                    **self.headers,
-                    **JSON_HEADERS,
-                    REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
-                }
-            )
-
-        response = self.with_retry(request)
+        self.logger("Get available time")
+        response = requests.get(
+            f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.facility_id}.json?"
+            f"date={available_date}&appointments[expedite]=false",
+            headers={
+                **self.headers(),
+                **JSON_HEADERS,
+                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+            }
+        )
         response.raise_for_status()
         data = response.json()
         return data["available_times"] or data["business_times"]
@@ -497,10 +418,10 @@ class Bot:
     def book(self, available_date: str, available_time: str):
         def request() -> Response:
             self.logger("Book")
-            return self.client.post(
+            return requests.post(
                 f"{self.url}/schedule/{self.schedule_id}/appointment",
                 headers={
-                    **self.headers,
+                    **self.headers(),
                     **DOCUMENT_HEADERS,
                     **SEC_FETCH_USER_HEADERS,
                     CONTENT_TYPE: "application/x-www-form-urlencoded",
@@ -508,7 +429,7 @@ class Bot:
                     REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
                 },
                 data=urlencode({
-                    "authenticity_token": self.headers[X_CSRF_TOKEN_HEADER],
+                    "authenticity_token": self.csrf,
                     "confirmed_limit_message": "1",
                     "use_consulate_appointment_capacity": "true",
                     "appointments[consulate_appointment][facility_id]": self.config.facility_id,
@@ -520,58 +441,11 @@ class Bot:
         self.with_retry(request)
 
     def iterate(self):
-        use_main_bot = False
-
-        if self.config.use_proxy and (datetime.now() - self.last_ping_time).seconds < PING_DELAY:
-            first_sub_bot_index = self.current_sub_bot_index
-            available_dates = None
-            while available_dates is None:
-                try:
-                    sub_bot = self.sub_bots[self.current_sub_bot_index]
-                    self.logger(f"Use bot with proxy: {sub_bot.client.proxy}")
-                    available_dates = sub_bot.get_available_dates()
-                except KeyboardInterrupt:
-                    exit()
-                except Exception as err:
-                    self.logger(err)
-
-                self.current_sub_bot_index += 1
-                if self.current_sub_bot_index >= len(self.sub_bots):
-                    self.current_sub_bot_index = 0
-
-                if first_sub_bot_index == self.current_sub_bot_index:
-                    break
-
-            if available_dates is None:
-                self.logger("Use main bot")
-                use_main_bot = True
-                available_dates = self.get_available_dates()
-                self.last_ping_time = datetime.now()
-        else:
-            self.logger("Use main bot")
-            available_dates = self.get_available_dates()
-            self.last_ping_time = datetime.now()
+        available_dates = self.get_available_dates()
 
         if not available_dates:
             self.logger("No available dates")
-            if use_main_bot:
-                raise UseMainBotException()
             return
-
-        if self.appointment_datetime:
-            appointment_year = self.appointment_datetime.year
-            appointment_month = self.appointment_datetime.month
-            appointment_day = self.appointment_datetime.day
-        else:
-            appointment_year = None
-            appointment_month = None
-            appointment_day = None
-
-        min_year = self.appointment_datetime.year
-        min_month = self.appointment_datetime.month
-        min_day = self.appointment_datetime.day
-
-        booked = False
 
         for available_date in available_dates:
             self.logger(f"Next nearest date: {available_date}")
@@ -580,11 +454,15 @@ class Bot:
             month = int(available_date[5:7])
             day = int(available_date[8:10])
 
-            if year <= min_year and month <= min_month and day < min_day:
+            if (year <= self.appointment_datetime.year
+                    and month <= self.appointment_datetime.month
+                    and day < self.appointment_datetime.day):
                 continue
 
             if self.appointment_datetime:
-                if year > appointment_year or month > appointment_month or day >= appointment_day:
+                if (year > self.appointment_datetime.year
+                        or month > self.appointment_datetime.month
+                        or day >= self.appointment_datetime.day):
                     break
 
             available_times = self.get_available_times(available_date)
@@ -630,13 +508,7 @@ class Bot:
                         "=====================",
                         True
                     )
-                    booked = True
-                    break
-            if booked:
-                break
-
-        if use_main_bot:
-            raise UseMainBotException()
+                    return
 
     def process(self):
         errors_count = 0
@@ -649,9 +521,7 @@ class Bot:
                 self.with_retry(self.iterate)
                 errors_count = max(0, errors_count - 1)
             except KeyboardInterrupt:
-                exit()
-            except UseMainBotException:
-                time.sleep(PING_DELAY)
+                return
             except Exception as err:
                 self.logger(err)
                 errors_count += 1
@@ -663,10 +533,9 @@ class Bot:
 
 
 def main():
-    config = Config(CONFIG_FILE, PROXY_FILE)
+    config = Config(CONFIG_FILE)
     logger = Logger(config.debug)
-    client = Client(TIMEOUT)
-    Bot(config, logger, client, MAX_ERROR_DELAY).process()
+    Bot(config, logger, MAX_ERROR_DELAY).process()
 
 
 if __name__ == "__main__":
