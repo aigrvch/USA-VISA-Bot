@@ -2,15 +2,14 @@ import os.path
 import os.path
 import re
 import time
-import traceback
 from datetime import datetime
-from typing import Optional, Any, Callable
+from typing import Optional, Any, Callable, TypeVar
 from urllib.parse import urlencode
 
 import requests
 import urllib3
 from bs4 import BeautifulSoup
-from requests import Response
+from requests import Response, HTTPError
 
 HOST = "ais.usvisa-info.com"
 REFERER = "Referer"
@@ -122,6 +121,7 @@ UNAUTHORIZED_STATUS = 401
 TRUE = "True"
 HTML_PARSER = "html.parser"
 PING_DELAY = 2 * 60
+T = TypeVar('T')
 
 CONFIG_FILE = "config"
 PROXY_FILE = "proxy"
@@ -144,9 +144,7 @@ class Logger:
 
     def __call__(self, message: str | Exception, force: bool = False):
         if self.debug or force:
-            print(f"[{datetime.now().isoformat()}] {message}")
-            if isinstance(message, Exception):
-                traceback.print_exc()
+            print(f"[{datetime.now().strftime(DATE_TIME_FORMAT)}] {message}")
 
 
 class Config:
@@ -241,7 +239,7 @@ class Config:
                 time.sleep(5)
 
             with open(proxy_path, "r") as f:
-                self.proxies = f.readlines()
+                self.proxies = [x.strip() for x in f.readlines()]
         else:
             self.proxies = []
 
@@ -339,12 +337,20 @@ class Bot:
     def get_csrf(response: Response) -> str:
         return BeautifulSoup(response.text, HTML_PARSER).find("meta", {"name": "csrf-token"})["content"]
 
-    def with_retry(self, request: Callable[[], Response]) -> Response:
+    def with_retry(self, request: Callable[[], T]) -> T:
         if not self.headers or not self.schedule_id:
             self.init()
 
-        response = request()
-        if response.status_code == UNAUTHORIZED_STATUS:
+        try:
+            response = request()
+        except HTTPError as err:
+            if err.response.status_code == UNAUTHORIZED_STATUS:
+                self.init()
+                response = request()
+            else:
+                raise err
+
+        if isinstance(response, Response) and response.status_code == UNAUTHORIZED_STATUS:
             self.init()
             response = request()
         return response
@@ -353,6 +359,8 @@ class Bot:
         self.login()
         self.init_current_data()
         self.init_csrf_and_cookie()
+        if not self.config.facility_id:
+            self.config.set_facility_id(self.get_available_facility_id())
         self.logger(
             "Current appointment date and time: "
             f"{self.appointment_datetime.strftime(DATE_TIME_FORMAT)}"
@@ -540,6 +548,7 @@ class Bot:
                 available_dates = self.get_available_dates()
                 self.last_ping_time = datetime.now()
         else:
+            self.logger("Use main bot")
             available_dates = self.get_available_dates()
             self.last_ping_time = datetime.now()
 
@@ -630,19 +639,14 @@ class Bot:
             raise UseMainBotException()
 
     def process(self):
-        self.init()
-
-        if not self.config.facility_id:
-            self.config.set_facility_id(self.get_available_facility_id())
-
         errors_count = 0
         while True:
-            if self.appointment_datetime and self.appointment_datetime < self.config.min_date:
-                self.logger("Current appointment date and time lower than specified minimal date")
-                break
-
             try:
-                self.iterate()
+                if self.appointment_datetime and self.appointment_datetime <= self.config.min_date:
+                    self.logger("Current appointment date and time lower than specified minimal date")
+                    break
+
+                self.with_retry(self.iterate)
                 errors_count = max(0, errors_count - 1)
             except KeyboardInterrupt:
                 exit()
