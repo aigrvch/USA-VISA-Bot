@@ -259,18 +259,21 @@ class Bot:
 
     def with_retry(self, request: Callable[[], T]) -> T:
         if not self.cookie or not self.schedule_id or not self.csrf:
+            self.logger(f"Not found cookie ({self.cookie}), schedule_id ({self.schedule_id}) or csrf ({self.csrf})")
             self.init()
 
         try:
             response = request()
         except HTTPError as err:
             if err.response.status_code == UNAUTHORIZED_STATUS:
+                self.logger("Get 401")
                 self.init()
                 response = request()
             else:
                 raise err
 
         if isinstance(response, Response) and response.status_code == UNAUTHORIZED_STATUS:
+            self.logger("Get 401")
             self.init()
             response = request()
         return response
@@ -291,6 +294,7 @@ class Bot:
         self.init_current_data()
         self.init_csrf_and_cookie()
         if not self.config.facility_id:
+            self.logger("Not found facility_id")
             self.config.set_facility_id(self.get_available_facility_id())
         self.logger(
             "Current appointment date and time: "
@@ -398,7 +402,9 @@ class Bot:
             }
         )
         response.raise_for_status()
-        return [x["date"] for x in response.json()]
+        dates = [x["date"] for x in response.json()]
+        dates.sort()
+        return dates
 
     def get_available_times(self, available_date) -> list[str]:
         self.logger("Get available time")
@@ -413,7 +419,9 @@ class Bot:
         )
         response.raise_for_status()
         data = response.json()
-        return data["available_times"] or data["business_times"]
+        times = data["available_times"] or data["business_times"]
+        times.sort()
+        return times
 
     def book(self, available_date: str, available_time: str):
         def request() -> Response:
@@ -447,6 +455,8 @@ class Bot:
             self.logger("No available dates")
             return
 
+        self.logger(f"All available dates: {available_dates}")
+
         for available_date in available_dates:
             self.logger(f"Next nearest date: {available_date}")
 
@@ -454,21 +464,30 @@ class Bot:
             month = int(available_date[5:7])
             day = int(available_date[8:10])
 
-            if (year <= self.appointment_datetime.year
-                    and month <= self.appointment_datetime.month
-                    and day < self.appointment_datetime.day):
+            if (year <= self.config.min_date.year
+                    and month <= self.config.min_date.month
+                    and day < self.config.min_date.day):
+                self.logger(
+                    f"Nearest date is lower than your minimal date {self.config.min_date.strftime(DATE_FORMAT)}"
+                )
                 continue
 
             if self.appointment_datetime:
                 if (year > self.appointment_datetime.year
                         or month > self.appointment_datetime.month
                         or day >= self.appointment_datetime.day):
+                    self.logger(
+                        "Nearest date is greater than your current date "
+                        f"{self.appointment_datetime.strftime(DATE_FORMAT)}"
+                    )
                     break
 
             available_times = self.get_available_times(available_date)
             if not available_times:
                 self.logger("No available times")
                 continue
+
+            self.logger(f"All available for date {available_date} times: {available_times}")
 
             for available_time in available_times:
                 self.logger(f"Next nearest time: {available_time}")
