@@ -185,7 +185,7 @@ class Config:
             try:
                 min_date = input(
                     "Enter minimal appointment date in format day.month.year "
-                    "(example 10.01.2002) or leave blank"
+                    "(example 10.01.2002) or leave blank: "
                 )
                 if min_date:
                     min_date = datetime.strptime(min_date, DATE_FORMAT)
@@ -197,7 +197,8 @@ class Config:
 
         delay_seconds = config_data.get("DELAY_SECONDS")
         try:
-            delay_seconds = int(delay_seconds)
+            if delay_seconds:
+                delay_seconds = int(delay_seconds)
         except ValueError | TypeError:
             delay_seconds = None
         while not delay_seconds:
