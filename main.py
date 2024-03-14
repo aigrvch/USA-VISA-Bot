@@ -147,7 +147,7 @@ class Config:
 
         config_data = dict()
         if not os.path.exists(self.config_path):
-            os.mknod(self.config_path)
+            open(self.config_path, 'w').close()
         with open(self.config_path, "r") as f:
             for line in f.readlines():
                 param = line.strip().split("=", maxsplit=1)
