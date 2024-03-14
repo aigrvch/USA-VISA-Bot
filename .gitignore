@@ -5,3 +5,4 @@ config
 /dist/
 /main.spec
 /proxy
+/fixed_dist/
