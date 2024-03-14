@@ -406,7 +406,7 @@ class Bot:
         dates.sort()
         return dates
 
-    def get_available_times(self, available_date) -> list[str]:
+    def get_available_times(self, available_date: str) -> list[str]:
         self.logger("Get available time")
         response = requests.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.facility_id}.json?"
