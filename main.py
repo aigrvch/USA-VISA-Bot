@@ -185,14 +185,15 @@ class Config:
             min_date = None
         while not min_date:
             try:
-                min_date = datetime.strptime(
-                    input(
-                        "Enter minimal appointment date in format day.month.year "
-                        "(example 10.01.2002) or leave blank"
-                    ),
-                    DATE_FORMAT
+                min_date = input(
+                    "Enter minimal appointment date in format day.month.year "
+                    "(example 10.01.2002) or leave blank"
                 )
-            except ValueError:
+                if min_date:
+                    min_date = datetime.strptime(min_date, DATE_FORMAT)
+                else:
+                    min_date = datetime.now()
+            except ValueError | TypeError:
                 pass
         self.min_date: datetime = min_date
 
