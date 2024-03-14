@@ -177,7 +177,8 @@ class Config:
 
         min_date = config_data.get("MIN_DATE")
         try:
-            min_date = datetime.strptime(min_date, DATE_FORMAT)
+            if min_date:
+                min_date = datetime.strptime(min_date, DATE_FORMAT)
         except ValueError | TypeError:
             min_date = None
         while not min_date:
