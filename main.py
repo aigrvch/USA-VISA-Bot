@@ -463,22 +463,16 @@ class Bot:
         for available_date in available_dates:
             self.logger(f"Next nearest date: {available_date}")
 
-            year = int(available_date[0:4])
-            month = int(available_date[5:7])
-            day = int(available_date[8:10])
+            available_date_datetime = datetime.strptime(available_date, "%Y-%m-%d").date()
 
-            if (year <= self.config.min_date.year
-                    and month <= self.config.min_date.month
-                    and day < self.config.min_date.day):
+            if available_date_datetime <= self.config.min_date.date():
                 self.logger(
                     f"Nearest date is lower than your minimal date {self.config.min_date.strftime(DATE_FORMAT)}"
                 )
                 continue
 
             if self.appointment_datetime:
-                if (year > self.appointment_datetime.year
-                        or month > self.appointment_datetime.month
-                        or day >= self.appointment_datetime.day):
+                if available_date_datetime >= self.appointment_datetime.date():
                     self.logger(
                         "Nearest date is greater than your current date "
                         f"{self.appointment_datetime.strftime(DATE_FORMAT)}"
