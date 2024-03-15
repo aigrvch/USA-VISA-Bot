@@ -477,8 +477,8 @@ class Bot:
 
             if self.appointment_datetime:
                 if (year > self.appointment_datetime.year
-                        and month > self.appointment_datetime.month
-                        and day >= self.appointment_datetime.day):
+                        or month > self.appointment_datetime.month
+                        or day >= self.appointment_datetime.day):
                     self.logger(
                         "Nearest date is greater than your current date "
                         f"{self.appointment_datetime.strftime(DATE_FORMAT)}"
