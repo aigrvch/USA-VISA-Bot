@@ -3,7 +3,7 @@ import os.path
 import re
 import time
 from datetime import datetime
-from typing import Optional, Callable, TypeVar
+from typing import Optional, TypeVar
 from urllib.parse import urlencode
 
 import requests
@@ -255,31 +255,11 @@ class Bot:
         self.schedule_id: Optional[str] = None
         self.csrf: Optional[str] = None
         self.cookie: Optional[str] = None
+        self.session = requests.session()
 
     @staticmethod
     def get_csrf(response: Response) -> str:
         return BeautifulSoup(response.text, HTML_PARSER).find("meta", {"name": "csrf-token"})["content"]
-
-    def with_retry(self, request: Callable[[], T]) -> T:
-        if not self.cookie or not self.schedule_id or not self.csrf:
-            self.logger(f"Not found cookie ({self.cookie}), schedule_id ({self.schedule_id}) or csrf ({self.csrf})")
-            self.init()
-
-        try:
-            response = request()
-        except HTTPError as err:
-            if err.response.status_code == UNAUTHORIZED_STATUS:
-                self.logger("Get 401")
-                self.init()
-                response = request()
-            else:
-                raise err
-
-        if isinstance(response, Response) and response.status_code == UNAUTHORIZED_STATUS:
-            self.logger("Get 401")
-            self.init()
-            response = request()
-        return response
 
     def headers(self) -> dict[str, str]:
         headers = dict()
@@ -293,9 +273,17 @@ class Bot:
         return headers
 
     def init(self):
+        # noinspection PyBroadException
+        try:
+            self.session.close()
+        except Exception:
+            pass
+        self.session = requests.Session()
+
         self.login()
         self.init_current_data()
         self.init_csrf_and_cookie()
+
         if not self.config.facility_id:
             self.logger("Not found facility_id")
             self.config.set_facility_id(self.get_available_facility_id())
@@ -306,7 +294,7 @@ class Bot:
 
     def login(self):
         self.logger("Get sign in")
-        response = requests.get(
+        response = self.session.get(
             f"{self.url}/users/sign_in",
             headers={
                 COOKIE_HEADER: "",
@@ -318,7 +306,7 @@ class Bot:
         cookies = response.headers.get(SET_COOKIE)
 
         self.logger("Post sing in")
-        response = requests.post(
+        response = self.session.post(
             f"{self.url}/users/sign_in",
             headers={
                 **DEFAULT_HEADERS,
@@ -341,7 +329,7 @@ class Bot:
 
     def init_current_data(self):
         self.logger("Get current appointment")
-        response = requests.get(
+        response = self.session.get(
             self.url,
             headers={
                 **self.headers(),
@@ -381,7 +369,7 @@ class Bot:
 
     def load_change_appointment_page(self) -> Response:
         self.logger("Get new appointment")
-        response = requests.get(
+        response = self.session.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment",
             headers={
                 **self.headers(),
@@ -395,7 +383,7 @@ class Bot:
 
     def get_available_dates(self) -> list[str]:
         self.logger("Get available date")
-        response = requests.get(
+        response = self.session.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
             f"{self.config.facility_id}.json?appointments[expedite]=false",
             headers={
@@ -411,7 +399,7 @@ class Bot:
 
     def get_available_times(self, available_date: str) -> list[str]:
         self.logger("Get available time")
-        response = requests.get(
+        response = self.session.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.facility_id}.json?"
             f"date={available_date}&appointments[expedite]=false",
             headers={
@@ -427,32 +415,41 @@ class Bot:
         return times
 
     def book(self, available_date: str, available_time: str):
-        def request() -> Response:
-            self.logger("Book")
-            return requests.post(
-                f"{self.url}/schedule/{self.schedule_id}/appointment",
-                headers={
-                    **self.headers(),
-                    **DOCUMENT_HEADERS,
-                    **SEC_FETCH_USER_HEADERS,
-                    CONTENT_TYPE: "application/x-www-form-urlencoded",
-                    "Origin": f"https://{HOST}",
-                    REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
-                },
-                data=urlencode({
-                    "authenticity_token": self.csrf,
-                    "confirmed_limit_message": "1",
-                    "use_consulate_appointment_capacity": "true",
-                    "appointments[consulate_appointment][facility_id]": self.config.facility_id,
-                    "appointments[consulate_appointment][date]": available_date,
-                    "appointments[consulate_appointment][time]": available_time
-                })
-            )
-
-        self.with_retry(request)
+        self.logger("Book")
+        return self.session.post(
+            f"{self.url}/schedule/{self.schedule_id}/appointment",
+            headers={
+                **self.headers(),
+                **DOCUMENT_HEADERS,
+                **SEC_FETCH_USER_HEADERS,
+                CONTENT_TYPE: "application/x-www-form-urlencoded",
+                "Origin": f"https://{HOST}",
+                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+            },
+            data=urlencode({
+                "authenticity_token": self.csrf,
+                "confirmed_limit_message": "1",
+                "use_consulate_appointment_capacity": "true",
+                "appointments[consulate_appointment][facility_id]": self.config.facility_id,
+                "appointments[consulate_appointment][date]": available_date,
+                "appointments[consulate_appointment][time]": available_time
+            })
+        )
 
     def iterate(self):
-        available_dates = self.get_available_dates()
+        if not self.cookie or not self.schedule_id or not self.csrf:
+            self.logger(f"Not found cookie ({self.cookie}), schedule_id ({self.schedule_id}) or csrf ({self.csrf})")
+            self.init()
+
+        try:
+            available_dates = self.get_available_dates()
+        except HTTPError as err:
+            if err.response.status_code == UNAUTHORIZED_STATUS:
+                self.logger("Get 401")
+                self.init()
+                available_dates = self.get_available_dates()
+            else:
+                raise err
 
         if not available_dates:
             self.logger("No available dates")
@@ -534,7 +531,7 @@ class Bot:
                     self.logger("Current appointment date and time lower than specified minimal date")
                     break
 
-                self.with_retry(self.iterate)
+                self.iterate()
                 errors_count = max(0, errors_count - 1)
             except KeyboardInterrupt:
                 return
