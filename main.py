@@ -1,13 +1,13 @@
 import os.path
-import os.path
 import re
+import threading
 import time
 from datetime import datetime
+from multiprocessing import Process, Semaphore
 from typing import Optional, TypeVar
 from urllib.parse import urlencode
 
 import requests
-import urllib3
 from bs4 import BeautifulSoup
 from requests import Response, HTTPError
 
@@ -124,7 +124,7 @@ T = TypeVar('T')
 
 CONFIG_FILE = "config"
 TIMEOUT = 4
-MAX_ERROR_DELAY = 4 * 60 * 60
+ERROR_DELAY_SECONDS = 10
 
 
 class NoScheduleIdException(Exception):
@@ -195,19 +195,6 @@ class Config:
                 pass
         self.min_date: datetime = min_date
 
-        delay_seconds = config_data.get("DELAY_SECONDS")
-        try:
-            if delay_seconds:
-                delay_seconds = int(delay_seconds)
-        except ValueError | TypeError:
-            delay_seconds = None
-        while not delay_seconds:
-            try:
-                delay_seconds = int(input("Delay seconds: "))
-            except ValueError:
-                pass
-        self.delay_seconds: int = delay_seconds
-
         debug = config_data.get("DEBUG")
         if debug is None:
             debug = input("Do you want to see all logs (Y/N)?: ").upper() == "Y"
@@ -238,17 +225,25 @@ class Config:
     def __save(self):
         with open(self.config_path, "w") as f:
             f.write(
-                f"EMAIL={self.email}\nPASSWORD={self.password}\nCOUNTRY={self.country}"
-                f"\nDEBUG={self.debug}\nFACILITY_ID={self.facility_id}\nDELAY_SECONDS={self.delay_seconds}"
+                f"EMAIL={self.email}"
+                f"\nPASSWORD={self.password}"
+                f"\nCOUNTRY={self.country}"
+                f"\nDEBUG={self.debug}"
+                f"\nFACILITY_ID={self.facility_id}"
                 f"\nMIN_DATE={self.min_date.strftime(DATE_FORMAT)}"
             )
 
 
 class Bot:
-    def __init__(self, config: Config, logger: Logger, max_error_delay: int):
+    def __init__(
+            self,
+            config: Config,
+            logger: Logger,
+            error_delay_seconds: float
+    ):
         self.logger = logger
         self.config = config
-        self.max_error_delay = max_error_delay
+        self.error_delay_seconds = error_delay_seconds
         self.url = f"https://{HOST}/en-{config.country}/niv"
 
         self.appointment_datetime: Optional[datetime] = None
@@ -436,124 +431,116 @@ class Bot:
             })
         )
 
-    def iterate(self):
-        if not self.cookie or not self.schedule_id or not self.csrf:
-            self.logger(f"Not found cookie ({self.cookie}), schedule_id ({self.schedule_id}) or csrf ({self.csrf})")
-            self.init()
-
-        try:
-            available_dates = self.get_available_dates()
-        except HTTPError as err:
-            if err.response.status_code == UNAUTHORIZED_STATUS:
-                self.logger("Get 401")
-                self.init()
-                available_dates = self.get_available_dates()
-            else:
-                raise err
-
-        if not available_dates:
-            self.logger("No available dates")
-            return
-
-        self.logger(f"All available dates: {available_dates}")
-
-        for available_date in available_dates:
-            self.logger(f"Next nearest date: {available_date}")
-
-            available_date_datetime = datetime.strptime(available_date, "%Y-%m-%d").date()
-
-            if available_date_datetime <= self.config.min_date.date():
-                self.logger(
-                    f"Nearest date is lower than your minimal date {self.config.min_date.strftime(DATE_FORMAT)}"
-                )
-                continue
-
-            if self.appointment_datetime:
-                if available_date_datetime >= self.appointment_datetime.date():
-                    self.logger(
-                        "Nearest date is greater than your current date "
-                        f"{self.appointment_datetime.strftime(DATE_FORMAT)}"
-                    )
-                    break
-
-            available_times = self.get_available_times(available_date)
-            if not available_times:
-                self.logger("No available times")
-                continue
-
-            self.logger(f"All available for date {available_date} times: {available_times}")
-
-            for available_time in available_times:
-                self.logger(f"Next nearest time: {available_time}")
-
-                self.logger(
-                    "=====================\n"
-                    "#                   #\n"
-                    "#                   #\n"
-                    "#    Try to book    #\n"
-                    "#                   #\n"
-                    "#                   #\n"
-                    f"# {available_time}  {available_date} #\n"
-                    "#                   #\n"
-                    "#                   #\n"
-                    "=====================",
-                    True
-                )
-
-                self.book(available_date, available_time)
-
-                appointment_datetime = self.appointment_datetime
-                self.init_current_data()
-
-                if appointment_datetime != self.appointment_datetime:
-                    self.logger(
-                        "=====================\n"
-                        "#                   #\n"
-                        "#                   #\n"
-                        "#     Booked at     #\n"
-                        "#                   #\n"
-                        "#                   #\n"
-                        f"# {self.appointment_datetime.strftime(DATE_TIME_FORMAT)} #\n"
-                        "#                   #\n"
-                        "#                   #\n"
-                        "#  Close window to  #\n"
-                        "#    end awaiting   #\n"
-                        "=====================",
-                        True
-                    )
-                    return
-
     def process(self):
-        errors_count = 0
+        self.init()
+
         while True:
             try:
                 if self.appointment_datetime and self.appointment_datetime <= self.config.min_date:
                     self.logger("Current appointment date and time lower than specified minimal date")
                     break
 
-                self.iterate()
-                errors_count = max(0, errors_count - 1)
+                try:
+                    available_dates = self.get_available_dates()
+                except HTTPError as err:
+                    if err.response.status_code != UNAUTHORIZED_STATUS:
+                        raise err
+
+                    self.logger("Get 401")
+                    self.init()
+                    available_dates = self.get_available_dates()
+
+                if not available_dates:
+                    self.logger("No available dates")
+                    continue
+
+                self.logger(f"All available dates: {available_dates}")
+
+                for available_date in available_dates:
+                    self.logger(f"Next nearest date: {available_date}")
+
+                    available_date_datetime = datetime.strptime(available_date, "%Y-%m-%d").date()
+
+                    if available_date_datetime <= self.config.min_date.date():
+                        self.logger(
+                            "Nearest date is lower than your minimal date "
+                            f"{self.config.min_date.strftime(DATE_FORMAT)}"
+                        )
+                        continue
+
+                    if self.appointment_datetime and available_date_datetime >= self.appointment_datetime.date():
+                        self.logger(
+                            "Nearest date is greater than your current date "
+                            f"{self.appointment_datetime.strftime(DATE_FORMAT)}"
+                        )
+                        break
+
+                    available_times = self.get_available_times(available_date)
+                    if not available_times:
+                        self.logger("No available times")
+                        continue
+
+                    self.logger(f"All available times for date {available_date}: {available_times}")
+
+                    booked = False
+                    for available_time in available_times:
+                        self.logger(f"Next nearest time: {available_time}")
+
+                        self.logger(
+                            "=====================\n"
+                            "#                   #\n"
+                            "#                   #\n"
+                            "#    Try to book    #\n"
+                            "#                   #\n"
+                            "#                   #\n"
+                            f"# {available_time}  {available_date} #\n"
+                            "#                   #\n"
+                            "#                   #\n"
+                            "=====================",
+                            True
+                        )
+
+                        self.book(available_date, available_time)
+
+                        appointment_datetime = self.appointment_datetime
+                        self.init_current_data()
+
+                        if appointment_datetime != self.appointment_datetime:
+                            self.logger(
+                                "=====================\n"
+                                "#                   #\n"
+                                "#                   #\n"
+                                "#     Booked at     #\n"
+                                "#                   #\n"
+                                "#                   #\n"
+                                f"# {self.appointment_datetime.strftime(DATE_TIME_FORMAT)} #\n"
+                                "#                   #\n"
+                                "#                   #\n"
+                                "#  Close window to  #\n"
+                                "#    end awaiting   #\n"
+                                "=====================",
+                                True
+                            )
+                            booked = True
+                            break
+
+                    if booked:
+                        break
             except KeyboardInterrupt:
                 return
             except Exception as err:
                 self.logger(err)
-                errors_count += 1
-
-            time.sleep(self.config.delay_seconds + min(
-                self.max_error_delay,
-                errors_count * self.config.delay_seconds
-            ))
+                time.sleep(self.error_delay_seconds)
 
 
 def main():
     config = Config(CONFIG_FILE)
     logger = Logger(config.debug)
-    Bot(config, logger, MAX_ERROR_DELAY).process()
+    Bot(config, logger, ERROR_DELAY_SECONDS).process()
 
 
 if __name__ == "__main__":
     try:
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         main()
     except KeyboardInterrupt:
         pass
