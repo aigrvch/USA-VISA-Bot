@@ -1,9 +1,7 @@
 import os.path
 import re
-import threading
 import time
 from datetime import datetime
-from multiprocessing import Process, Semaphore
 from typing import Optional, TypeVar
 from urllib.parse import urlencode
 
