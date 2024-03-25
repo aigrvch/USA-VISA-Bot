@@ -631,8 +631,8 @@ class Bot:
                             asc_available_time
                         )
 
-                            appointment_datetime = self.appointment_datetime
-                            self.init_current_data()
+                        appointment_datetime = self.appointment_datetime
+                        self.init_current_data()
 
                         if appointment_datetime != self.appointment_datetime:
                             log = (
@@ -665,13 +665,13 @@ class Bot:
                             booked = True
                             break
 
-                            if booked:
-                                break
-        except KeyboardInterrupt:
-            return
-        except Exception as err:
-            self.logger(err)
-            time.sleep(self.error_delay_seconds)
+                    if booked:
+                        break
+            except KeyboardInterrupt:
+                return
+            except Exception as err:
+                self.logger(err)
+                time.sleep(self.error_delay_seconds)
 
 
 def main():
