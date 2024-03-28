@@ -307,7 +307,7 @@ class Bot:
 
         self.logger(
             "Current appointment date and time: "
-            f"{self.appointment_datetime.strftime(DATE_TIME_FORMAT)}"
+            f"{self.appointment_datetime.strftime(DATE_TIME_FORMAT) if self.appointment_datetime else 'No date'}"
         )
 
     def login(self):
