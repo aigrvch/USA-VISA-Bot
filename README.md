@@ -30,8 +30,6 @@ pyinstaller -F main.py
    when bot success send request to service.
 4. If you need ASC registration, try code on `asc_support` branch and **give me feedback**.
 
-## Question? Contact me
+## Question? Join group
 
-Telegram: https://t.me/aigrvch
-
-Email: a.igrvch@gmail.com
+[Telegram](https://t.me/+eAG7XzmfTPM1YzNi)
