@@ -282,7 +282,7 @@ class Bot:
             self.config.set_facility_id(self.get_available_facility_id())
         self.logger(
             "Current appointment date and time: "
-            f"{self.appointment_datetime.strftime(DATE_TIME_FORMAT)}"
+            f"{self.appointment_datetime.strftime(DATE_TIME_FORMAT) if self.appointment_datetime else 'No date'}"
         )
 
     def login(self):
