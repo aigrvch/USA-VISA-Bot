@@ -28,6 +28,7 @@ pyinstaller -F main.py
 2. Application ask about delay in seconds. It means, how fast bot will be asks about new appointment.
 3. When bot gets error from service, it increases delay by formula `count_of_error * delay`. Delay will be decrease,
    when bot success send request to service.
+4. If you need ASC registration, try code on `asc_support` branch and **give me feedback**.
 
 ## Question? Contact me
 
