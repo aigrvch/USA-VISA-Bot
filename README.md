@@ -32,4 +32,4 @@ pyinstaller -F main.py
 
 ## Question? Join group
 
-[Telegram](https://t.me/u_s_a_visa_bot
+[Telegram](https://t.me/u_s_a_visa_bot)
