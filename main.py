@@ -211,7 +211,9 @@ class Config:
 
         need_asc = config_data.get("NEED_ASC")
         if need_asc is None:
-            need_asc = input("Do you need ASC registration (Y/N. Enter N, if you don't know, what is it)?: ").upper() == "Y"
+            need_asc = input(
+                "Do you need ASC registration (Y/N. Enter N, if you don't know, what is it)?: "
+            ).upper() == "Y"
         else:
             need_asc = need_asc == "True"
         self.need_asc = need_asc
