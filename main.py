@@ -117,6 +117,7 @@ DATE_TIME_FORMAT = "%H:%M %Y-%m-%d"
 DATE_FORMAT = "%d.%m.%Y"
 TRUE = "True"
 HTML_PARSER = "html.parser"
+Y = "Y"
 
 CONFIG_FILE = "config"
 LOG_FILE = "log.txt"
@@ -165,7 +166,9 @@ class Config:
             for line in f.readlines():
                 param = line.strip().split("=", maxsplit=1)
                 if len(param) == 2:
-                    config_data[param[0].strip()] = param[1].strip()
+                    value = param[1].strip()
+                    if value and value != "None":
+                        config_data[param[0].strip()] = param[1].strip()
 
         email = config_data.get("EMAIL")
         if not email:
@@ -208,25 +211,40 @@ class Config:
                 pass
         self.min_date: datetime = min_date
 
+        need_asc = config_data.get("NEED_ASC")
+        if need_asc is None:
+            need_asc = input("Do you need ASC registration (Y/N)?: ").upper() == Y
+        else:
+            need_asc = need_asc == TRUE
+        self.need_asc = need_asc
+
         self.facility_id: Optional[str] = config_data.get("FACILITY_ID")
+        self.asc_facility_id: Optional[str] = config_data.get("ASC_FACILITY_ID")
 
         self.__save()
 
     def set_facility_id(self, locations: dict[str, str]):
-        if len(locations) == 1:
-            self.facility_id = next(iter(locations))
-        else:
-            facility_id = None
-            while not facility_id:
-                facility_id = input(
-                    "Choose city (enter number): \n" +
-                    "\n".join([x[0] + "  " + x[1] for x in locations.items()]) + "\n"
-                )
-                if facility_id not in locations:
-                    facility_id = None
-            self.facility_id = facility_id
-
+        self.facility_id = self.__choose_location(locations, "consul")
         self.__save()
+
+    def set_asc_facility_id(self, locations: dict[str, str]):
+        self.asc_facility_id = self.__choose_location(locations, "asc")
+        self.__save()
+
+    @staticmethod
+    def __choose_location(locations: dict[str, str], location_name: str) -> str:
+        if len(locations) == 1:
+            return next(iter(locations))
+
+        facility_id = None
+        while not facility_id:
+            facility_id = input(
+                f"Choose {location_name} location (enter number): \n" +
+                "\n".join([x[0] + "  " + x[1] for x in locations.items()]) + "\n"
+            )
+            if facility_id not in locations:
+                facility_id = None
+        return facility_id
 
     def __save(self):
         with open(self.config_path, "w") as f:
@@ -236,6 +254,8 @@ class Config:
                 f"\nCOUNTRY={self.country}"
                 f"\nFACILITY_ID={self.facility_id}"
                 f"\nMIN_DATE={self.min_date.strftime(DATE_FORMAT)}"
+                f"\nNEED_ASC={self.need_asc}"
+                f"\nASC_FACILITY_ID={self.asc_facility_id}"
             )
 
 
@@ -281,6 +301,11 @@ class Bot:
         if not self.config.facility_id:
             self.logger("Not found facility_id")
             self.config.set_facility_id(self.get_available_facility_id())
+
+        if self.config.need_asc and not self.config.asc_facility_id:
+            self.logger("Not found asc_facility_id")
+            self.config.set_asc_facility_id(self.get_available_asc_facility_id())
+
         self.logger(
             "Current appointment date and time: "
             f"{self.appointment_datetime.strftime(DATE_TIME_FORMAT) if self.appointment_datetime else 'No date'}"
@@ -353,16 +378,24 @@ class Bot:
         self.cookie = response.headers.get(SET_COOKIE)
         self.csrf = Bot.get_csrf(response)
 
-    def get_available_facility_id(self) -> dict[str, str]:
-        self.logger("Get facility id list")
+    def get_available_locations(self, element_id: str) -> dict[str, str]:
+        self.logger("Get location list")
         locations = (BeautifulSoup(self.load_change_appointment_page().text, HTML_PARSER)
-                     .find("select", {"id": "appointments_consulate_appointment_facility_id"})
+                     .find("select", {"id": element_id})
                      .findAll("option"))
         facility_id_to_location = dict[str, str]()
         for location in locations:
             if location["value"]:
                 facility_id_to_location[location["value"]] = location.text
         return facility_id_to_location
+
+    def get_available_facility_id(self) -> dict[str, str]:
+        self.logger("Get facility id list")
+        return self.get_available_locations("appointments_consulate_appointment_facility_id")
+
+    def get_available_asc_facility_id(self) -> dict[str, str]:
+        self.logger("Get asc facility id list")
+        return self.get_available_locations("appointments_asc_appointment_facility_id")
 
     def load_change_appointment_page(self) -> Response:
         self.logger("Get new appointment")
@@ -411,8 +444,70 @@ class Bot:
         times.sort()
         return times
 
-    def book(self, available_date: str, available_time: str):
+    def get_asc_available_dates(self, available_date: str, available_time: str) -> list[str]:
+        self.logger("Get available dates ASC")
+        response = self.session.get(
+            f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
+            f"{self.config.asc_facility_id}.json?&consulate_id={self.config.facility_id}"
+            f"&consulate_date={available_date}&consulate_time={available_time}&appointments[expedite]=false",
+            headers={
+                **self.headers(),
+                **JSON_HEADERS,
+                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+            }
+        )
+        response.raise_for_status()
+        dates = [x["date"] for x in response.json()]
+        dates.sort()
+        return dates
+
+    def get_asc_available_times(self, available_date: str, available_time: str, asc_available_date: str) -> list[str]:
+        self.logger("Get available times ASC")
+        response = self.session.get(
+            f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.asc_facility_id}.json?"
+            f"date={asc_available_date}&consulate_id={self.schedule_id}&consulate_date={available_date}"
+            f"&consulate_time={available_time}&appointments[expedite]=false",
+            headers={
+                **self.headers(),
+                **JSON_HEADERS,
+                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        times = data["available_times"] or data["business_times"]
+        times.sort()
+        return times
+
+    def book(
+            self,
+            available_date: str,
+            available_time: str,
+            asc_available_date: Optional[str],
+            asc_available_time: Optional[str]
+    ):
         self.logger("Book")
+
+        body = {
+            "authenticity_token": self.csrf,
+            "confirmed_limit_message": "1",
+            "use_consulate_appointment_capacity": "true",
+            "appointments[consulate_appointment][facility_id]": self.config.facility_id,
+            "appointments[consulate_appointment][date]": available_date,
+            "appointments[consulate_appointment][time]": available_time
+        }
+
+        if asc_available_date and available_time:
+            self.logger("Add ASC date and time to request")
+            body = {
+                **body,
+                "appointments[asc_appointment][facility_id]": self.config.asc_facility_id,
+                "appointments[asc_appointment][date]": asc_available_date,
+                "appointments[asc_appointment][time]": asc_available_time
+            }
+
+        self.logger(f"Request {body}")
+
         return self.session.post(
             f"{self.url}/schedule/{self.schedule_id}/appointment",
             headers={
@@ -423,14 +518,7 @@ class Bot:
                 "Origin": f"https://{HOST}",
                 REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
             },
-            data=urlencode({
-                "authenticity_token": self.csrf,
-                "confirmed_limit_message": "1",
-                "use_consulate_appointment_capacity": "true",
-                "appointments[consulate_appointment][facility_id]": self.config.facility_id,
-                "appointments[consulate_appointment][date]": available_date,
-                "appointments[consulate_appointment][time]": available_time
-            })
+            data=urlencode(body)
         )
 
     def process(self):
@@ -493,7 +581,34 @@ class Bot:
                     for available_time in available_times:
                         self.logger(f"Next nearest time: {available_time}")
 
-                        self.logger(
+                        asc_available_date = None
+                        asc_available_time = None
+
+                        if self.config.need_asc:
+                            asc_available_dates = self.get_asc_available_dates(
+                                available_date,
+                                available_time
+                            )
+
+                            if not asc_available_dates:
+                                self.logger("No available ASC dates")
+                                return
+
+                            asc_available_date = asc_available_dates[0]
+
+                            asc_available_times = self.get_asc_available_times(
+                                available_date,
+                                available_time,
+                                asc_available_date
+                            )
+
+                            if not asc_available_times:
+                                self.logger("No available ASC times")
+                                continue
+
+                            asc_available_time = asc_available_times[0]
+
+                        log = (
                             "=====================\n"
                             "#                   #\n"
                             "#                   #\n"
@@ -501,18 +616,36 @@ class Bot:
                             "#                   #\n"
                             "#                   #\n"
                             f"# {available_time}  {available_date} #\n"
+                        )
+
+                        if asc_available_date and asc_available_time:
+                            log += (
+                                "#                   #\n"
+                                "#                   #\n"
+                                "#     With  ASC     #\n"
+                                f"# {asc_available_time}  {asc_available_date} #\n"
+                            )
+
+                        log += (
                             "#                   #\n"
                             "#                   #\n"
                             "====================="
                         )
 
-                        self.book(available_date, available_time)
+                        self.logger(log)
+
+                        self.book(
+                            available_date,
+                            available_time,
+                            asc_available_date,
+                            asc_available_time
+                        )
 
                         appointment_datetime = self.appointment_datetime
                         self.init_current_data()
 
                         if appointment_datetime != self.appointment_datetime:
-                            self.logger(
+                            log = (
                                 "=====================\n"
                                 "#                   #\n"
                                 "#                   #\n"
@@ -520,12 +653,25 @@ class Bot:
                                 "#                   #\n"
                                 "#                   #\n"
                                 f"# {self.appointment_datetime.strftime(DATE_TIME_FORMAT)} #\n"
+                            )
+
+                            if asc_available_date and asc_available_time:
+                                log += (
+                                    "#                   #\n"
+                                    "#                   #\n"
+                                    "#     With  ASC     #\n"
+                                    f"# {asc_available_time}  {asc_available_date} #\n"
+                                )
+
+                            log += (
                                 "#                   #\n"
                                 "#                   #\n"
                                 "#  Close window to  #\n"
                                 "#    end awaiting   #\n"
                                 "====================="
                             )
+
+                            self.logger(log)
                             booked = True
                             break
 
