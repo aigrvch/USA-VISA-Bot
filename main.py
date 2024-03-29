@@ -1,13 +1,14 @@
+import logging
 import os.path
 import re
 import time
 from datetime import datetime
-from typing import Optional, TypeVar
+from typing import Optional
 from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
-from requests import Response, HTTPError
+from requests import Response
 
 HOST = "ais.usvisa-info.com"
 REFERER = "Referer"
@@ -114,15 +115,12 @@ COUNTRIES = {
 }
 DATE_TIME_FORMAT = "%H:%M %Y-%m-%d"
 DATE_FORMAT = "%d.%m.%Y"
-ERROR_START_STATUS = 400
-UNAUTHORIZED_STATUS = 401
 TRUE = "True"
 HTML_PARSER = "html.parser"
-T = TypeVar('T')
 
 CONFIG_FILE = "config"
-TIMEOUT = 4
-ERROR_DELAY_SECONDS = 10
+LOG_FILE = "log.txt"
+LOG_FORMAT = "%(asctime)s  %(message)s"
 
 
 class NoScheduleIdException(Exception):
@@ -130,13 +128,28 @@ class NoScheduleIdException(Exception):
         super().__init__("No schedule id")
 
 
-class Logger:
-    def __init__(self, debug: bool = True):
-        self.debug = debug
+class AppointmentDateLowerMinDate(Exception):
+    def __init__(self):
+        super().__init__("Current appointment date and time lower than specified minimal date")
 
-    def __call__(self, message: str | Exception, force: bool = False):
-        if self.debug or force:
-            print(f"[{datetime.now().strftime(DATE_TIME_FORMAT)}] {message}")
+
+class Logger:
+    def __init__(self, log_file: str, log_format: str):
+        log_formatter = logging.Formatter(log_format)
+        root_logger = logging.getLogger()
+
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(log_formatter)
+        root_logger.addHandler(file_handler)
+
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(log_formatter)
+        root_logger.addHandler(console_handler)
+
+        self.root_logger = root_logger
+
+    def __call__(self, message: str | Exception):
+        self.root_logger.debug(message, exc_info=isinstance(message, Exception))
 
 
 class Config:
@@ -193,13 +206,6 @@ class Config:
                 pass
         self.min_date: datetime = min_date
 
-        debug = config_data.get("DEBUG")
-        if debug is None:
-            debug = input("Do you want to see all logs (Y/N)?: ").upper() == "Y"
-        else:
-            debug = debug == TRUE
-        self.debug = debug
-
         self.facility_id: Optional[str] = config_data.get("FACILITY_ID")
 
         self.__save()
@@ -226,22 +232,15 @@ class Config:
                 f"EMAIL={self.email}"
                 f"\nPASSWORD={self.password}"
                 f"\nCOUNTRY={self.country}"
-                f"\nDEBUG={self.debug}"
                 f"\nFACILITY_ID={self.facility_id}"
                 f"\nMIN_DATE={self.min_date.strftime(DATE_FORMAT)}"
             )
 
 
 class Bot:
-    def __init__(
-            self,
-            config: Config,
-            logger: Logger,
-            error_delay_seconds: float
-    ):
+    def __init__(self, config: Config, logger: Logger):
         self.logger = logger
         self.config = config
-        self.error_delay_seconds = error_delay_seconds
         self.url = f"https://{HOST}/en-{config.country}/niv"
 
         self.appointment_datetime: Optional[datetime] = None
@@ -343,6 +342,9 @@ class Bot:
         if match:
             self.appointment_datetime = datetime.strptime(match.group(0), "%d %B, %Y, %H:%M")
 
+        if self.appointment_datetime and self.appointment_datetime <= self.config.min_date:
+            raise AppointmentDateLowerMinDate()
+
     def init_csrf_and_cookie(self):
         self.logger("Init csrf")
         response = self.load_change_appointment_page()
@@ -430,23 +432,19 @@ class Bot:
         )
 
     def process(self):
-        self.init()
-
         while True:
             try:
-                if self.appointment_datetime and self.appointment_datetime <= self.config.min_date:
-                    self.logger("Current appointment date and time lower than specified minimal date")
-                    break
+                now = datetime.now()
+                mod = now.minute % 5
 
-                try:
-                    available_dates = self.get_available_dates()
-                except HTTPError as err:
-                    if err.response.status_code != UNAUTHORIZED_STATUS:
-                        raise err
+                if mod != 0:
+                    if mod == 4 and now.second >= 30:
+                        self.init()
+                    else:
+                        time.sleep(1)
+                    continue
 
-                    self.logger("Get 401")
-                    self.init()
-                    available_dates = self.get_available_dates()
+                available_dates = self.get_available_dates()
 
                 if not available_dates:
                     self.logger("No available dates")
@@ -494,8 +492,7 @@ class Bot:
                             f"# {available_time}  {available_date} #\n"
                             "#                   #\n"
                             "#                   #\n"
-                            "=====================",
-                            True
+                            "====================="
                         )
 
                         self.book(available_date, available_time)
@@ -516,8 +513,7 @@ class Bot:
                                 "#                   #\n"
                                 "#  Close window to  #\n"
                                 "#    end awaiting   #\n"
-                                "=====================",
-                                True
+                                "====================="
                             )
                             booked = True
                             break
@@ -526,15 +522,17 @@ class Bot:
                         break
             except KeyboardInterrupt:
                 return
+            except NoScheduleIdException | AppointmentDateLowerMinDate as err:
+                self.logger(err)
+                return
             except Exception as err:
                 self.logger(err)
-                time.sleep(self.error_delay_seconds)
 
 
 def main():
     config = Config(CONFIG_FILE)
-    logger = Logger(config.debug)
-    Bot(config, logger, ERROR_DELAY_SECONDS).process()
+    logger = Logger(LOG_FILE, LOG_FORMAT)
+    Bot(config, logger).process()
 
 
 if __name__ == "__main__":
