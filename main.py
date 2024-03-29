@@ -146,6 +146,8 @@ class Logger:
         console_handler.setFormatter(log_formatter)
         root_logger.addHandler(console_handler)
 
+        root_logger.setLevel("DEBUG")
+
         self.root_logger = root_logger
 
     def __call__(self, message: str | Exception):
@@ -432,6 +434,7 @@ class Bot:
         )
 
     def process(self):
+        reinit = True
         while True:
             try:
                 now = datetime.now()
@@ -439,10 +442,18 @@ class Bot:
 
                 if mod != 0:
                     if mod == 4 and now.second >= 30:
-                        self.init()
+                        if reinit:
+                            self.init()
+                            reinit = False
+                        else:
+                            time.sleep(1)
                     else:
+                        reinit = True
                         time.sleep(1)
+                    self.logger("Wait")
                     continue
+                elif reinit:
+                    self.init()
 
                 available_dates = self.get_available_dates()
 
@@ -522,7 +533,7 @@ class Bot:
                         break
             except KeyboardInterrupt:
                 return
-            except NoScheduleIdException | AppointmentDateLowerMinDate as err:
+            except (NoScheduleIdException, AppointmentDateLowerMinDate) as err:
                 self.logger(err)
                 return
             except Exception as err:
