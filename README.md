@@ -29,8 +29,6 @@ pyinstaller -F main.py
 3. When bot gets error from service, it increases delay by formula `count_of_error * delay`. Delay will be decrease,
    when bot success send request to service.
 
-## Question? Contact me
+## Question? Join group
 
-Telegram: https://t.me/aigrvch
-
-Email: a.igrvch@gmail.com
+[Telegram](https://t.me/u_s_a_visa_bot)
