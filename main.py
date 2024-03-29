@@ -115,9 +115,7 @@ COUNTRIES = {
 }
 DATE_TIME_FORMAT = "%H:%M %Y-%m-%d"
 DATE_FORMAT = "%d.%m.%Y"
-TRUE = "True"
 HTML_PARSER = "html.parser"
-Y = "Y"
 
 CONFIG_FILE = "config"
 LOG_FILE = "log.txt"
@@ -213,9 +211,9 @@ class Config:
 
         need_asc = config_data.get("NEED_ASC")
         if need_asc is None:
-            need_asc = input("Do you need ASC registration (Y/N)?: ").upper() == Y
+            need_asc = input("Do you need ASC registration (Y/N. Set N, if you don't know, what is it)?: ").upper() == "Y"
         else:
-            need_asc = need_asc == TRUE
+            need_asc = need_asc == "True"
         self.need_asc = need_asc
 
         self.facility_id: Optional[str] = config_data.get("FACILITY_ID")
