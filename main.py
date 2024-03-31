@@ -542,6 +542,7 @@ class Bot:
                     continue
                 elif reinit:
                     self.init()
+                    reinit = False
 
                 available_dates = self.get_available_dates()
 
