@@ -2,7 +2,7 @@ import logging
 import os.path
 import re
 import time
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -116,6 +116,7 @@ COUNTRIES = {
 DATE_TIME_FORMAT = "%H:%M %Y-%m-%d"
 DATE_FORMAT = "%d.%m.%Y"
 HTML_PARSER = "html.parser"
+NONE = "None"
 
 CONFIG_FILE = "config"
 LOG_FILE = "log.txt"
@@ -165,7 +166,7 @@ class Config:
                 param = line.strip().split("=", maxsplit=1)
                 if len(param) == 2:
                     value = param[1].strip()
-                    if value and value != "None":
+                    if value:
                         config_data[param[0].strip()] = param[1].strip()
 
         email = config_data.get("EMAIL")
@@ -207,7 +208,34 @@ class Config:
                     min_date = datetime.now()
             except ValueError | TypeError:
                 pass
-        self.min_date: datetime = min_date
+        self.min_date: date = min_date.date()
+
+        max_date = config_data.get("MAX_DATE")
+        init_max_date = True
+        try:
+            if max_date:
+                if max_date == NONE:
+                    max_date = None
+                else:
+                    max_date = datetime.strptime(max_date, DATE_FORMAT)
+                init_max_date = False
+        except ValueError | TypeError:
+            max_date = None
+        if init_max_date:
+            while True:
+                try:
+                    max_date = input(
+                        "Enter maximal appointment date in format day.month.year "
+                        "(example 10.01.2002) or leave blank: "
+                    )
+                    if max_date:
+                        max_date = datetime.strptime(max_date, DATE_FORMAT)
+                    else:
+                        max_date = None
+                    break
+                except ValueError | TypeError:
+                    pass
+        self.max_date: Optional[date] = max_date.date() if max_date else None
 
         need_asc = config_data.get("NEED_ASC")
         if need_asc is None:
@@ -254,6 +282,7 @@ class Config:
                 f"\nCOUNTRY={self.country}"
                 f"\nFACILITY_ID={self.facility_id}"
                 f"\nMIN_DATE={self.min_date.strftime(DATE_FORMAT)}"
+                f"\nMAX_DATE={self.max_date.strftime(DATE_FORMAT) if self.max_date else NONE}"
                 f"\nNEED_ASC={self.need_asc}"
                 f"\nASC_FACILITY_ID={self.asc_facility_id}"
             )
@@ -369,7 +398,7 @@ class Bot:
         if match:
             self.appointment_datetime = datetime.strptime(match.group(0), "%d %B, %Y, %H:%M")
 
-        if self.appointment_datetime and self.appointment_datetime <= self.config.min_date:
+        if self.appointment_datetime and self.appointment_datetime.date() <= self.config.min_date:
             raise AppointmentDateLowerMinDate()
 
     def init_csrf_and_cookie(self):
@@ -552,62 +581,69 @@ class Bot:
 
                 self.logger(f"All available dates: {available_dates}")
 
-                for available_date in available_dates:
-                    self.logger(f"Next nearest date: {available_date}")
+                for available_date_str in available_dates:
+                    self.logger(f"Next nearest date: {available_date_str}")
 
-                    available_date_datetime = datetime.strptime(available_date, "%Y-%m-%d").date()
+                    available_date = datetime.strptime(available_date_str, "%Y-%m-%d").date()
 
-                    if available_date_datetime <= self.config.min_date.date():
+                    if available_date <= self.config.min_date:
                         self.logger(
                             "Nearest date is lower than your minimal date "
                             f"{self.config.min_date.strftime(DATE_FORMAT)}"
                         )
                         continue
 
-                    if self.appointment_datetime and available_date_datetime >= self.appointment_datetime.date():
+                    if self.appointment_datetime and available_date >= self.appointment_datetime.date():
                         self.logger(
                             "Nearest date is greater than your current date "
                             f"{self.appointment_datetime.strftime(DATE_FORMAT)}"
                         )
                         break
 
-                    available_times = self.get_available_times(available_date)
+                    if self.config.max_date and available_date > self.config.max_date:
+                        self.logger(
+                            "Nearest date is greater than your maximal date "
+                            f"{self.config.max_date.strftime(DATE_FORMAT)}"
+                        )
+                        break
+
+                    available_times = self.get_available_times(available_date_str)
                     if not available_times:
                         self.logger("No available times")
                         continue
 
-                    self.logger(f"All available times for date {available_date}: {available_times}")
+                    self.logger(f"All available times for date {available_date_str}: {available_times}")
 
                     booked = False
-                    for available_time in available_times:
-                        self.logger(f"Next nearest time: {available_time}")
+                    for available_time_str in available_times:
+                        self.logger(f"Next nearest time: {available_time_str}")
 
-                        asc_available_date = None
-                        asc_available_time = None
+                        asc_available_date_str = None
+                        asc_available_time_str = None
 
                         if self.config.need_asc:
                             asc_available_dates = self.get_asc_available_dates(
-                                available_date,
-                                available_time
+                                available_date_str,
+                                available_time_str
                             )
 
                             if not asc_available_dates:
                                 self.logger("No available ASC dates")
                                 return
 
-                            asc_available_date = asc_available_dates[0]
+                            asc_available_date_str = asc_available_dates[0]
 
                             asc_available_times = self.get_asc_available_times(
-                                available_date,
-                                available_time,
-                                asc_available_date
+                                available_date_str,
+                                available_time_str,
+                                asc_available_date_str
                             )
 
                             if not asc_available_times:
                                 self.logger("No available ASC times")
                                 continue
 
-                            asc_available_time = asc_available_times[0]
+                            asc_available_time_str = asc_available_times[0]
 
                         log = (
                             "=====================\n"
@@ -616,15 +652,15 @@ class Bot:
                             "#    Try to book    #\n"
                             "#                   #\n"
                             "#                   #\n"
-                            f"# {available_time}  {available_date} #\n"
+                            f"# {available_time_str}  {available_date_str} #\n"
                         )
 
-                        if asc_available_date and asc_available_time:
+                        if asc_available_date_str and asc_available_time_str:
                             log += (
                                 "#                   #\n"
                                 "#                   #\n"
                                 "#     With  ASC     #\n"
-                                f"# {asc_available_time}  {asc_available_date} #\n"
+                                f"# {asc_available_time_str}  {asc_available_date_str} #\n"
                             )
 
                         log += (
@@ -636,10 +672,10 @@ class Bot:
                         self.logger(log)
 
                         self.book(
-                            available_date,
-                            available_time,
-                            asc_available_date,
-                            asc_available_time
+                            available_date_str,
+                            available_time_str,
+                            asc_available_date_str,
+                            asc_available_time_str
                         )
 
                         appointment_datetime = self.appointment_datetime
@@ -656,12 +692,12 @@ class Bot:
                                 f"# {self.appointment_datetime.strftime(DATE_TIME_FORMAT)} #\n"
                             )
 
-                            if asc_available_date and asc_available_time:
+                            if asc_available_date_str and asc_available_time_str:
                                 log += (
                                     "#                   #\n"
                                     "#                   #\n"
                                     "#     With  ASC     #\n"
-                                    f"# {asc_available_time}  {asc_available_date} #\n"
+                                    f"# {asc_available_time_str}  {asc_available_date_str} #\n"
                                 )
 
                             log += (
