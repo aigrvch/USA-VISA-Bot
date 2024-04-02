@@ -226,7 +226,8 @@ class Config:
                 try:
                     max_date = input(
                         "Enter maximal appointment date in format day.month.year "
-                        "(example 10.01.2002) or leave blank: "
+                        "(example 10.01.2002) or leave blank (but make note, "
+                        "it may lead to the exhaustion of the transfer limit): "
                     )
                     if max_date:
                         max_date = datetime.strptime(max_date, DATE_FORMAT)

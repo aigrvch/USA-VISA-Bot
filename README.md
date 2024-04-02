@@ -1,5 +1,7 @@
 # Usa VISA appointment bot for [AIS](https://ais.usvisa-info.com/) region
 
+Use this bot on your own risk
+
 ## Requirements
 
 - python >= 3.10 (Wasn't tested on python < 3.10)
