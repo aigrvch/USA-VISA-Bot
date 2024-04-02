@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
-from requests import Response
+from requests import Response, HTTPError
 
 HOST = "ais.usvisa-info.com"
 REFERER = "Referer"
@@ -552,8 +552,7 @@ class Bot:
         )
 
     def process(self):
-        reinit = True
-        need_log_iterator = 25
+        self.init()
         while True:
             time.sleep(1)
             try:
@@ -561,24 +560,19 @@ class Bot:
                 mod = now.minute % 5
 
                 if mod != 0 or now.second < 10:
-                    if mod == 4 and now.second >= 30:
-                        if reinit:
-                            self.init()
-                            reinit = False
-                    elif mod == 1:
-                        reinit = True
-
-                    need_log_iterator += 1
-
-                    if need_log_iterator >= 25:
+                    if now.second % 10 == 0:
                         self.logger("Wait")
-                        need_log_iterator = 0
                     continue
-                elif reinit:
-                    self.init()
-                    reinit = False
 
-                available_dates = self.get_available_dates()
+                try:
+                    available_dates = self.get_available_dates()
+                except HTTPError as err:
+                    if err.response.status_code != 401:
+                        raise err
+
+                    self.logger("Get 401")
+                    self.init()
+                    available_dates = self.get_available_dates()
 
                 if not available_dates:
                     self.logger("No available dates")
