@@ -552,22 +552,26 @@ class Bot:
 
     def process(self):
         reinit = True
+        need_log_iterator = 25
         while True:
+            time.sleep(1)
             try:
                 now = datetime.now()
                 mod = now.minute % 5
 
-                if mod != 0:
+                if mod != 0 or now.second < 10:
                     if mod == 4 and now.second >= 30:
                         if reinit:
                             self.init()
                             reinit = False
-                        else:
-                            time.sleep(1)
-                    else:
+                    elif mod == 1:
                         reinit = True
-                        time.sleep(1)
-                    self.logger("Wait")
+
+                    need_log_iterator += 1
+
+                    if need_log_iterator >= 25:
+                        self.logger("Wait")
+                        need_log_iterator = 0
                     continue
                 elif reinit:
                     self.init()
