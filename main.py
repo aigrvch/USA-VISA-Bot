@@ -554,7 +554,7 @@ class Bot:
     def process(self):
         self.init()
         while True:
-            time.sleep(1)
+            time.sleep(1.5)
             try:
                 now = datetime.now()
                 mod = now.minute % 5
@@ -628,7 +628,7 @@ class Bot:
 
                             if not asc_available_dates:
                                 self.logger("No available ASC dates")
-                                return
+                                break
 
                             asc_available_date_str = asc_available_dates[0]
 
