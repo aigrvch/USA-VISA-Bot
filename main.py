@@ -1,8 +1,9 @@
+import logging
 import os.path
 import re
 import time
-from datetime import datetime
-from typing import Optional, TypeVar
+from datetime import datetime, date
+from typing import Optional
 from urllib.parse import urlencode
 
 import requests
@@ -114,15 +115,12 @@ COUNTRIES = {
 }
 DATE_TIME_FORMAT = "%H:%M %Y-%m-%d"
 DATE_FORMAT = "%d.%m.%Y"
-ERROR_START_STATUS = 400
-UNAUTHORIZED_STATUS = 401
-TRUE = "True"
 HTML_PARSER = "html.parser"
-T = TypeVar('T')
+NONE = "None"
 
 CONFIG_FILE = "config"
-TIMEOUT = 4
-ERROR_DELAY_SECONDS = 10
+LOG_FILE = "log.txt"
+LOG_FORMAT = "%(asctime)s  %(message)s"
 
 
 class NoScheduleIdException(Exception):
@@ -130,13 +128,30 @@ class NoScheduleIdException(Exception):
         super().__init__("No schedule id")
 
 
-class Logger:
-    def __init__(self, debug: bool = True):
-        self.debug = debug
+class AppointmentDateLowerMinDate(Exception):
+    def __init__(self):
+        super().__init__("Current appointment date and time lower than specified minimal date")
 
-    def __call__(self, message: str | Exception, force: bool = False):
-        if self.debug or force:
-            print(f"[{datetime.now().strftime(DATE_TIME_FORMAT)}] {message}")
+
+class Logger:
+    def __init__(self, log_file: str, log_format: str):
+        log_formatter = logging.Formatter(log_format)
+        root_logger = logging.getLogger()
+
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(log_formatter)
+        root_logger.addHandler(file_handler)
+
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(log_formatter)
+        root_logger.addHandler(console_handler)
+
+        root_logger.setLevel("DEBUG")
+
+        self.root_logger = root_logger
+
+    def __call__(self, message: str | Exception):
+        self.root_logger.debug(message, exc_info=isinstance(message, Exception))
 
 
 class Config:
@@ -150,7 +165,9 @@ class Config:
             for line in f.readlines():
                 param = line.strip().split("=", maxsplit=1)
                 if len(param) == 2:
-                    config_data[param[0].strip()] = param[1].strip()
+                    value = param[1].strip()
+                    if value:
+                        config_data[param[0].strip()] = param[1].strip()
 
         email = config_data.get("EMAIL")
         if not email:
@@ -191,34 +208,72 @@ class Config:
                     min_date = datetime.now()
             except ValueError | TypeError:
                 pass
-        self.min_date: datetime = min_date
+        self.min_date: date = min_date.date()
 
-        debug = config_data.get("DEBUG")
-        if debug is None:
-            debug = input("Do you want to see all logs (Y/N)?: ").upper() == "Y"
+        max_date = config_data.get("MAX_DATE")
+        init_max_date = True
+        try:
+            if max_date:
+                if max_date == NONE:
+                    max_date = None
+                else:
+                    max_date = datetime.strptime(max_date, DATE_FORMAT)
+                init_max_date = False
+        except ValueError | TypeError:
+            max_date = None
+        if init_max_date:
+            while True:
+                try:
+                    max_date = input(
+                        "Enter maximal appointment date in format day.month.year "
+                        "(example 10.01.2002) or leave blank (but make note, "
+                        "it may lead to the exhaustion of the transfer limit): "
+                    )
+                    if max_date:
+                        max_date = datetime.strptime(max_date, DATE_FORMAT)
+                    else:
+                        max_date = None
+                    break
+                except ValueError | TypeError:
+                    pass
+        self.max_date: Optional[date] = max_date.date() if max_date else None
+
+        need_asc = config_data.get("NEED_ASC")
+        if need_asc is None:
+            need_asc = input(
+                "Do you need ASC registration (Y/N. Enter N, if you don't know, what is it)?: "
+            ).upper() == "Y"
         else:
-            debug = debug == TRUE
-        self.debug = debug
+            need_asc = need_asc == "True"
+        self.need_asc = need_asc
 
         self.facility_id: Optional[str] = config_data.get("FACILITY_ID")
+        self.asc_facility_id: Optional[str] = config_data.get("ASC_FACILITY_ID")
 
         self.__save()
 
     def set_facility_id(self, locations: dict[str, str]):
-        if len(locations) == 1:
-            self.facility_id = next(iter(locations))
-        else:
-            facility_id = None
-            while not facility_id:
-                facility_id = input(
-                    "Choose city (enter number): \n" +
-                    "\n".join([x[0] + "  " + x[1] for x in locations.items()]) + "\n"
-                )
-                if facility_id not in locations:
-                    facility_id = None
-            self.facility_id = facility_id
-
+        self.facility_id = self.__choose_location(locations, "consul")
         self.__save()
+
+    def set_asc_facility_id(self, locations: dict[str, str]):
+        self.asc_facility_id = self.__choose_location(locations, "asc")
+        self.__save()
+
+    @staticmethod
+    def __choose_location(locations: dict[str, str], location_name: str) -> str:
+        if len(locations) == 1:
+            return next(iter(locations))
+
+        facility_id = None
+        while not facility_id:
+            facility_id = input(
+                f"Choose {location_name} location (enter number): \n" +
+                "\n".join([x[0] + "  " + x[1] for x in locations.items()]) + "\n"
+            )
+            if facility_id not in locations:
+                facility_id = None
+        return facility_id
 
     def __save(self):
         with open(self.config_path, "w") as f:
@@ -226,22 +281,18 @@ class Config:
                 f"EMAIL={self.email}"
                 f"\nPASSWORD={self.password}"
                 f"\nCOUNTRY={self.country}"
-                f"\nDEBUG={self.debug}"
                 f"\nFACILITY_ID={self.facility_id}"
                 f"\nMIN_DATE={self.min_date.strftime(DATE_FORMAT)}"
+                f"\nMAX_DATE={self.max_date.strftime(DATE_FORMAT) if self.max_date else NONE}"
+                f"\nNEED_ASC={self.need_asc}"
+                f"\nASC_FACILITY_ID={self.asc_facility_id}"
             )
 
 
 class Bot:
-    def __init__(
-            self,
-            config: Config,
-            logger: Logger,
-            error_delay_seconds: float
-    ):
+    def __init__(self, config: Config, logger: Logger):
         self.logger = logger
         self.config = config
-        self.error_delay_seconds = error_delay_seconds
         self.url = f"https://{HOST}/en-{config.country}/niv"
 
         self.appointment_datetime: Optional[datetime] = None
@@ -280,6 +331,11 @@ class Bot:
         if not self.config.facility_id:
             self.logger("Not found facility_id")
             self.config.set_facility_id(self.get_available_facility_id())
+
+        if self.config.need_asc and not self.config.asc_facility_id:
+            self.logger("Not found asc_facility_id")
+            self.config.set_asc_facility_id(self.get_available_asc_facility_id())
+
         self.logger(
             "Current appointment date and time: "
             f"{self.appointment_datetime.strftime(DATE_TIME_FORMAT) if self.appointment_datetime else 'No date'}"
@@ -343,22 +399,33 @@ class Bot:
         if match:
             self.appointment_datetime = datetime.strptime(match.group(0), "%d %B, %Y, %H:%M")
 
+        if self.appointment_datetime and self.appointment_datetime.date() <= self.config.min_date:
+            raise AppointmentDateLowerMinDate()
+
     def init_csrf_and_cookie(self):
         self.logger("Init csrf")
         response = self.load_change_appointment_page()
         self.cookie = response.headers.get(SET_COOKIE)
         self.csrf = Bot.get_csrf(response)
 
-    def get_available_facility_id(self) -> dict[str, str]:
-        self.logger("Get facility id list")
+    def get_available_locations(self, element_id: str) -> dict[str, str]:
+        self.logger("Get location list")
         locations = (BeautifulSoup(self.load_change_appointment_page().text, HTML_PARSER)
-                     .find("select", {"id": "appointments_consulate_appointment_facility_id"})
+                     .find("select", {"id": element_id})
                      .findAll("option"))
         facility_id_to_location = dict[str, str]()
         for location in locations:
             if location["value"]:
                 facility_id_to_location[location["value"]] = location.text
         return facility_id_to_location
+
+    def get_available_facility_id(self) -> dict[str, str]:
+        self.logger("Get facility id list")
+        return self.get_available_locations("appointments_consulate_appointment_facility_id")
+
+    def get_available_asc_facility_id(self) -> dict[str, str]:
+        self.logger("Get asc facility id list")
+        return self.get_available_locations("appointments_asc_appointment_facility_id")
 
     def load_change_appointment_page(self) -> Response:
         self.logger("Get new appointment")
@@ -407,8 +474,70 @@ class Bot:
         times.sort()
         return times
 
-    def book(self, available_date: str, available_time: str):
+    def get_asc_available_dates(self, available_date: str, available_time: str) -> list[str]:
+        self.logger("Get available dates ASC")
+        response = self.session.get(
+            f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
+            f"{self.config.asc_facility_id}.json?&consulate_id={self.config.facility_id}"
+            f"&consulate_date={available_date}&consulate_time={available_time}&appointments[expedite]=false",
+            headers={
+                **self.headers(),
+                **JSON_HEADERS,
+                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+            }
+        )
+        response.raise_for_status()
+        dates = [x["date"] for x in response.json()]
+        dates.sort()
+        return dates
+
+    def get_asc_available_times(self, available_date: str, available_time: str, asc_available_date: str) -> list[str]:
+        self.logger("Get available times ASC")
+        response = self.session.get(
+            f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.asc_facility_id}.json?"
+            f"date={asc_available_date}&consulate_id={self.schedule_id}&consulate_date={available_date}"
+            f"&consulate_time={available_time}&appointments[expedite]=false",
+            headers={
+                **self.headers(),
+                **JSON_HEADERS,
+                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        times = data["available_times"] or data["business_times"]
+        times.sort()
+        return times
+
+    def book(
+            self,
+            available_date: str,
+            available_time: str,
+            asc_available_date: Optional[str],
+            asc_available_time: Optional[str]
+    ):
         self.logger("Book")
+
+        body = {
+            "authenticity_token": self.csrf,
+            "confirmed_limit_message": "1",
+            "use_consulate_appointment_capacity": "true",
+            "appointments[consulate_appointment][facility_id]": self.config.facility_id,
+            "appointments[consulate_appointment][date]": available_date,
+            "appointments[consulate_appointment][time]": available_time
+        }
+
+        if asc_available_date and available_time:
+            self.logger("Add ASC date and time to request")
+            body = {
+                **body,
+                "appointments[asc_appointment][facility_id]": self.config.asc_facility_id,
+                "appointments[asc_appointment][date]": asc_available_date,
+                "appointments[asc_appointment][time]": asc_available_time
+            }
+
+        self.logger(f"Request {body}")
+
         return self.session.post(
             f"{self.url}/schedule/{self.schedule_id}/appointment",
             headers={
@@ -419,29 +548,26 @@ class Bot:
                 "Origin": f"https://{HOST}",
                 REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
             },
-            data=urlencode({
-                "authenticity_token": self.csrf,
-                "confirmed_limit_message": "1",
-                "use_consulate_appointment_capacity": "true",
-                "appointments[consulate_appointment][facility_id]": self.config.facility_id,
-                "appointments[consulate_appointment][date]": available_date,
-                "appointments[consulate_appointment][time]": available_time
-            })
+            data=urlencode(body)
         )
 
     def process(self):
         self.init()
-
         while True:
+            time.sleep(1.5)
             try:
-                if self.appointment_datetime and self.appointment_datetime <= self.config.min_date:
-                    self.logger("Current appointment date and time lower than specified minimal date")
-                    break
+                now = datetime.now()
+                mod = now.minute % 5
+
+                if mod != 0 or now.second < 10:
+                    if now.second % 10 == 0:
+                        self.logger("Wait")
+                    continue
 
                 try:
                     available_dates = self.get_available_dates()
                 except HTTPError as err:
-                    if err.response.status_code != UNAUTHORIZED_STATUS:
+                    if err.response.status_code != 401:
                         raise err
 
                     self.logger("Get 401")
@@ -454,57 +580,108 @@ class Bot:
 
                 self.logger(f"All available dates: {available_dates}")
 
-                for available_date in available_dates:
-                    self.logger(f"Next nearest date: {available_date}")
+                for available_date_str in available_dates:
+                    self.logger(f"Next nearest date: {available_date_str}")
 
-                    available_date_datetime = datetime.strptime(available_date, "%Y-%m-%d").date()
+                    available_date = datetime.strptime(available_date_str, "%Y-%m-%d").date()
 
-                    if available_date_datetime <= self.config.min_date.date():
+                    if available_date <= self.config.min_date:
                         self.logger(
                             "Nearest date is lower than your minimal date "
                             f"{self.config.min_date.strftime(DATE_FORMAT)}"
                         )
                         continue
 
-                    if self.appointment_datetime and available_date_datetime >= self.appointment_datetime.date():
+                    if self.appointment_datetime and available_date >= self.appointment_datetime.date():
                         self.logger(
                             "Nearest date is greater than your current date "
                             f"{self.appointment_datetime.strftime(DATE_FORMAT)}"
                         )
                         break
 
-                    available_times = self.get_available_times(available_date)
+                    if self.config.max_date and available_date > self.config.max_date:
+                        self.logger(
+                            "Nearest date is greater than your maximal date "
+                            f"{self.config.max_date.strftime(DATE_FORMAT)}"
+                        )
+                        break
+
+                    available_times = self.get_available_times(available_date_str)
                     if not available_times:
                         self.logger("No available times")
                         continue
 
-                    self.logger(f"All available times for date {available_date}: {available_times}")
+                    self.logger(f"All available times for date {available_date_str}: {available_times}")
 
                     booked = False
-                    for available_time in available_times:
-                        self.logger(f"Next nearest time: {available_time}")
+                    for available_time_str in available_times:
+                        self.logger(f"Next nearest time: {available_time_str}")
 
-                        self.logger(
+                        asc_available_date_str = None
+                        asc_available_time_str = None
+
+                        if self.config.need_asc:
+                            asc_available_dates = self.get_asc_available_dates(
+                                available_date_str,
+                                available_time_str
+                            )
+
+                            if not asc_available_dates:
+                                self.logger("No available ASC dates")
+                                break
+
+                            asc_available_date_str = asc_available_dates[0]
+
+                            asc_available_times = self.get_asc_available_times(
+                                available_date_str,
+                                available_time_str,
+                                asc_available_date_str
+                            )
+
+                            if not asc_available_times:
+                                self.logger("No available ASC times")
+                                continue
+
+                            asc_available_time_str = asc_available_times[0]
+
+                        log = (
                             "=====================\n"
                             "#                   #\n"
                             "#                   #\n"
                             "#    Try to book    #\n"
                             "#                   #\n"
                             "#                   #\n"
-                            f"# {available_time}  {available_date} #\n"
-                            "#                   #\n"
-                            "#                   #\n"
-                            "=====================",
-                            True
+                            f"# {available_time_str}  {available_date_str} #\n"
                         )
 
-                        self.book(available_date, available_time)
+                        if asc_available_date_str and asc_available_time_str:
+                            log += (
+                                "#                   #\n"
+                                "#                   #\n"
+                                "#     With  ASC     #\n"
+                                f"# {asc_available_time_str}  {asc_available_date_str} #\n"
+                            )
+
+                        log += (
+                            "#                   #\n"
+                            "#                   #\n"
+                            "====================="
+                        )
+
+                        self.logger(log)
+
+                        self.book(
+                            available_date_str,
+                            available_time_str,
+                            asc_available_date_str,
+                            asc_available_time_str
+                        )
 
                         appointment_datetime = self.appointment_datetime
                         self.init_current_data()
 
                         if appointment_datetime != self.appointment_datetime:
-                            self.logger(
+                            log = (
                                 "=====================\n"
                                 "#                   #\n"
                                 "#                   #\n"
@@ -512,13 +689,25 @@ class Bot:
                                 "#                   #\n"
                                 "#                   #\n"
                                 f"# {self.appointment_datetime.strftime(DATE_TIME_FORMAT)} #\n"
+                            )
+
+                            if asc_available_date_str and asc_available_time_str:
+                                log += (
+                                    "#                   #\n"
+                                    "#                   #\n"
+                                    "#     With  ASC     #\n"
+                                    f"# {asc_available_time_str}  {asc_available_date_str} #\n"
+                                )
+
+                            log += (
                                 "#                   #\n"
                                 "#                   #\n"
                                 "#  Close window to  #\n"
                                 "#    end awaiting   #\n"
-                                "=====================",
-                                True
+                                "====================="
                             )
+
+                            self.logger(log)
                             booked = True
                             break
 
@@ -526,15 +715,17 @@ class Bot:
                         break
             except KeyboardInterrupt:
                 return
+            except (NoScheduleIdException, AppointmentDateLowerMinDate) as err:
+                self.logger(err)
+                return
             except Exception as err:
                 self.logger(err)
-                time.sleep(self.error_delay_seconds)
 
 
 def main():
     config = Config(CONFIG_FILE)
-    logger = Logger(config.debug)
-    Bot(config, logger, ERROR_DELAY_SECONDS).process()
+    logger = Logger(LOG_FILE, LOG_FORMAT)
+    Bot(config, logger).process()
 
 
 if __name__ == "__main__":

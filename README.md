@@ -1,5 +1,7 @@
 # Usa VISA appointment bot for [AIS](https://ais.usvisa-info.com/) region
 
+Use this bot on your own risk
+
 ## Requirements
 
 - python >= 3.10 (Wasn't tested on python < 3.10)
@@ -28,7 +30,6 @@ pyinstaller -F main.py
 2. Application ask about delay in seconds. It means, how fast bot will be asks about new appointment.
 3. When bot gets error from service, it increases delay by formula `count_of_error * delay`. Delay will be decrease,
    when bot success send request to service.
-4. If you need ASC registration, try code on `asc_support_(old)` branch and **give me feedback**.
 
 ## Question? Join group
 
