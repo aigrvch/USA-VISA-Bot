@@ -7,3 +7,4 @@ config
 /proxy
 /fixed_dist/
 /log.txt
+asc

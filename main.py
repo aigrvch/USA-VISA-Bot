@@ -1,3 +1,4 @@
+import json
 import logging
 import os.path
 import re
@@ -119,8 +120,13 @@ HTML_PARSER = "html.parser"
 NONE = "None"
 
 CONFIG_FILE = "config"
+ASC_FILE = "asc"
 LOG_FILE = "log.txt"
 LOG_FORMAT = "%(asctime)s  %(message)s"
+
+
+def parse_date(date_str: str) -> date:
+    return datetime.strptime(date_str, "%Y-%m-%d").date()
 
 
 class NoScheduleIdException(Exception):
@@ -155,13 +161,13 @@ class Logger:
 
 
 class Config:
-    def __init__(self, config_path: str):
-        self.config_path = config_path
+    def __init__(self, config_file: str):
+        self.config_file = config_file
 
         config_data = dict()
-        if not os.path.exists(self.config_path):
-            open(self.config_path, 'w').close()
-        with open(self.config_path, "r") as f:
+        if not os.path.exists(self.config_file):
+            open(self.config_file, 'w').close()
+        with open(self.config_file, "r") as f:
             for line in f.readlines():
                 param = line.strip().split("=", maxsplit=1)
                 if len(param) == 2:
@@ -276,7 +282,7 @@ class Config:
         return facility_id
 
     def __save(self):
-        with open(self.config_path, "w") as f:
+        with open(self.config_file, "w") as f:
             f.write(
                 f"EMAIL={self.email}"
                 f"\nPASSWORD={self.password}"
@@ -290,9 +296,10 @@ class Config:
 
 
 class Bot:
-    def __init__(self, config: Config, logger: Logger):
+    def __init__(self, config: Config, logger: Logger, asc_file: str):
         self.logger = logger
         self.config = config
+        self.asc_file = asc_file
         self.url = f"https://{HOST}/en-{config.country}/niv"
 
         self.appointment_datetime: Optional[datetime] = None
@@ -300,6 +307,7 @@ class Bot:
         self.csrf: Optional[str] = None
         self.cookie: Optional[str] = None
         self.session = requests.session()
+        self.asc_dates = dict()
 
     @staticmethod
     def get_csrf(response: Response) -> str:
@@ -335,6 +343,8 @@ class Bot:
         if self.config.need_asc and not self.config.asc_facility_id:
             self.logger("Not found asc_facility_id")
             self.config.set_asc_facility_id(self.get_available_asc_facility_id())
+
+        self.init_asc_dates()
 
         self.logger(
             "Current appointment date and time: "
@@ -401,6 +411,46 @@ class Bot:
 
         if self.appointment_datetime and self.appointment_datetime.date() <= self.config.min_date:
             raise AppointmentDateLowerMinDate()
+
+    def init_asc_dates(self):
+        if not self.config.need_asc or not self.config.asc_facility_id:
+            return
+
+        if not os.path.exists(self.asc_file):
+            open(self.asc_file, 'w').close()
+        with open(self.asc_file) as f:
+            # noinspection PyBroadException
+            try:
+                self.asc_dates = json.load(f)
+            except:
+                pass
+
+        dates_temp = None
+
+        # noinspection PyBroadException
+        try:
+            dates_temp = self.get_asc_available_dates()
+        except:
+            pass
+
+        if dates_temp:
+            dates = []
+            for x in dates_temp:
+                date_temp = parse_date(x)
+                if self.config.min_date <= date_temp <= self.config.max_date:
+                    dates.append(x)
+
+            if len(dates) > 0:
+                self.asc_dates = dict()
+                for x in dates:
+                    # noinspection PyBroadException
+                    try:
+                        self.asc_dates[x] = self.get_asc_available_times(x)
+                    except:
+                        pass
+
+        with open(self.asc_file, 'w') as f:
+            json.dump(self.asc_dates, f)
 
     def init_csrf_and_cookie(self):
         self.logger("Init csrf")
@@ -474,12 +524,18 @@ class Bot:
         times.sort()
         return times
 
-    def get_asc_available_dates(self, available_date: str, available_time: str) -> list[str]:
+    def get_asc_available_dates(
+            self,
+            available_date: Optional[str] = None,
+            available_time: Optional[str] = None
+    ) -> list[str]:
         self.logger("Get available dates ASC")
         response = self.session.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
             f"{self.config.asc_facility_id}.json?&consulate_id={self.config.facility_id}"
-            f"&consulate_date={available_date}&consulate_time={available_time}&appointments[expedite]=false",
+            f"&consulate_date={available_date if available_date else ''}"
+            f"&consulate_time={available_time if available_time else ''}"
+            f"&appointments[expedite]=false",
             headers={
                 **self.headers(),
                 **JSON_HEADERS,
@@ -491,12 +547,19 @@ class Bot:
         dates.sort()
         return dates
 
-    def get_asc_available_times(self, available_date: str, available_time: str, asc_available_date: str) -> list[str]:
+    def get_asc_available_times(
+            self,
+            asc_available_date: str,
+            available_date: Optional[str] = None,
+            available_time: Optional[str] = None
+    ) -> list[str]:
         self.logger("Get available times ASC")
         response = self.session.get(
             f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.asc_facility_id}.json?"
-            f"date={asc_available_date}&consulate_id={self.schedule_id}&consulate_date={available_date}"
-            f"&consulate_time={available_time}&appointments[expedite]=false",
+            f"date={asc_available_date}&consulate_id={self.schedule_id}"
+            f"&consulate_date={available_date if available_date else ''}"
+            f"&consulate_time={available_time if available_time else ''}"
+            f"&appointments[expedite]=false",
             headers={
                 **self.headers(),
                 **JSON_HEADERS,
@@ -580,10 +643,11 @@ class Bot:
 
                 self.logger(f"All available dates: {available_dates}")
 
+                reinit_asc = False
                 for available_date_str in available_dates:
                     self.logger(f"Next nearest date: {available_date_str}")
 
-                    available_date = datetime.strptime(available_date_str, "%Y-%m-%d").date()
+                    available_date = parse_date(available_date_str)
 
                     if available_date <= self.config.min_date:
                         self.logger(
@@ -621,28 +685,38 @@ class Bot:
                         asc_available_time_str = None
 
                         if self.config.need_asc:
-                            asc_available_dates = self.get_asc_available_dates(
-                                available_date_str,
-                                available_time_str
-                            )
+                            asc_available_date_str = None
+                            asc_available_time_str = None
 
-                            if not asc_available_dates:
-                                self.logger("No available ASC dates")
-                                break
+                            for k, v in self.asc_dates.items():
+                                if parse_date(k) >= available_date and len(v) > 0:
+                                    asc_available_date_str = k
+                                    asc_available_time_str = v[0]
+                                    break
 
-                            asc_available_date_str = asc_available_dates[0]
+                            if not asc_available_date_str or not asc_available_time_str:
+                                asc_available_dates = self.get_asc_available_dates(
+                                    available_date_str,
+                                    available_time_str
+                                )
 
-                            asc_available_times = self.get_asc_available_times(
-                                available_date_str,
-                                available_time_str,
-                                asc_available_date_str
-                            )
+                                if not asc_available_dates:
+                                    self.logger("No available ASC dates")
+                                    break
 
-                            if not asc_available_times:
-                                self.logger("No available ASC times")
-                                continue
+                                asc_available_date_str = asc_available_dates[0]
 
-                            asc_available_time_str = asc_available_times[0]
+                                asc_available_times = self.get_asc_available_times(
+                                    asc_available_date_str,
+                                    available_date_str,
+                                    available_time_str
+                                )
+
+                                if not asc_available_times:
+                                    self.logger("No available ASC times")
+                                    continue
+
+                                asc_available_time_str = asc_available_times[0]
 
                         log = (
                             "=====================\n"
@@ -711,8 +785,14 @@ class Bot:
                             booked = True
                             break
 
+                    reinit_asc = True
+
                     if booked:
                         break
+
+                if reinit_asc and self.config.need_asc:
+                    self.init_asc_dates()
+
             except KeyboardInterrupt:
                 return
             except (NoScheduleIdException, AppointmentDateLowerMinDate) as err:
@@ -725,7 +805,7 @@ class Bot:
 def main():
     config = Config(CONFIG_FILE)
     logger = Logger(LOG_FILE, LOG_FORMAT)
-    Bot(config, logger).process()
+    Bot(config, logger, ASC_FILE).process()
 
 
 if __name__ == "__main__":
