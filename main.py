@@ -1,9 +1,10 @@
 import json
 import logging
 import os.path
+import random
 import re
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -688,10 +689,12 @@ class Bot:
                             asc_available_date_str = None
                             asc_available_time_str = None
 
+                            min_asc_date = available_date - timedelta(days=7)
+
                             for k, v in self.asc_dates.items():
-                                if parse_date(k) >= available_date and len(v) > 0:
+                                if min_asc_date <= parse_date(k) < available_date and len(v) > 0:
                                     asc_available_date_str = k
-                                    asc_available_time_str = v[0]
+                                    asc_available_time_str = random.choice(v)
                                     break
 
                             if not asc_available_date_str or not asc_available_time_str:
@@ -716,7 +719,7 @@ class Bot:
                                     self.logger("No available ASC times")
                                     continue
 
-                                asc_available_time_str = asc_available_times[0]
+                                asc_available_time_str = random.choice(asc_available_times)
 
                         log = (
                             "=====================\n"
