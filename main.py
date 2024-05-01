@@ -798,7 +798,7 @@ class Bot:
 
             except KeyboardInterrupt:
                 return
-            except AppointmentDateLowerMinDate as err:
+            except (NoScheduleIdException, AppointmentDateLowerMinDate) as err:
                 self.logger(err)
                 return
             except Exception as err:
