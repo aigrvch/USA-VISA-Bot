@@ -504,7 +504,10 @@ class Bot:
             }
         )
         response.raise_for_status()
-        dates = [x["date"] for x in response.json()]
+
+        data = response.json()
+        self.logger(f"Response: {data}")
+        dates = [x["date"] for x in data]
         dates.sort()
         return dates
 
@@ -521,6 +524,7 @@ class Bot:
         )
         response.raise_for_status()
         data = response.json()
+        self.logger(f"Response: {data}")
         times = data["available_times"] or data["business_times"]
         times.sort()
         return times
@@ -544,7 +548,9 @@ class Bot:
             }
         )
         response.raise_for_status()
-        dates = [x["date"] for x in response.json()]
+        data = response.json()
+        self.logger(f"Response: {data}")
+        dates = [x["date"] for x in data]
         dates.sort()
         return dates
 
@@ -569,6 +575,7 @@ class Bot:
         )
         response.raise_for_status()
         data = response.json()
+        self.logger(f"Response: {data}")
         times = data["available_times"] or data["business_times"]
         times.sort()
         return times
