@@ -172,9 +172,12 @@ class Config:
             for line in f.readlines():
                 param = line.strip().split("=", maxsplit=1)
                 if len(param) == 2:
+                    key = param[0].strip()
                     value = param[1].strip()
-                    if value:
-                        config_data[param[0].strip()] = param[1].strip()
+                    if value and value != NONE:
+                        config_data[key] = param[1].strip()
+                    else:
+                        config_data[key] = None
 
         email = config_data.get("EMAIL")
         if not email:
@@ -217,15 +220,11 @@ class Config:
                 pass
         self.min_date: date = min_date.date()
 
+        init_max_date = "MAX_DATE" not in config_data
         max_date = config_data.get("MAX_DATE")
-        init_max_date = True
         try:
             if max_date:
-                if max_date == NONE:
-                    max_date = None
-                else:
-                    max_date = datetime.strptime(max_date, DATE_FORMAT)
-                init_max_date = False
+                max_date = datetime.strptime(max_date, DATE_FORMAT)
         except ValueError | TypeError:
             max_date = None
         if init_max_date:
