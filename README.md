@@ -33,3 +33,11 @@ pyinstaller -F main.py
 3. Bot has ASC registration, but it may not work. Make pull request, if you fixed it
 4. Join [Telegram group](https://t.me/u_s_a_visa_bot)
 5. Bot can work only with one person in account
+
+## Donation
+
+- USDT TON - UQB_R5AkOP8YR9jPrc6FRxeJYdTsojgsyeZkz9IEQx7fVJaH
+- USDT TRC20 - TC2UQeCxDiCP2RGAQvuxN3yzosghnntfpL
+- TON - UQB_R5AkOP8YR9jPrc6FRxeJYdTsojgsyeZkz9IEQx7fVJaH
+- BTC - 1PAnKCKskMJvaBcvJmepaU2QkUFZN1mh3b
+- ETH - 0x5C7381c01b69D643FBF84fceFB9F9F39E65B7765
