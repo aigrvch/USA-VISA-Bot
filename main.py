@@ -161,6 +161,13 @@ class Logger:
         self.root_logger.debug(message, exc_info=isinstance(message, Exception))
 
 
+class Appointment:
+    def __init__(self, schedule_id: str, description: str, appointment_datetime: Optional[datetime]):
+        self.schedule_id = schedule_id
+        self.description = description
+        self.appointment_datetime = appointment_datetime
+
+
 class Config:
     def __init__(self, config_file: str):
         self.config_file = config_file
@@ -253,8 +260,14 @@ class Config:
             need_asc = need_asc == "True"
         self.need_asc = need_asc
 
-        self.facility_id: Optional[str] = config_data.get("FACILITY_ID")
-        self.asc_facility_id: Optional[str] = config_data.get("ASC_FACILITY_ID")
+        self.schedule_id: Optional[str] = config_data.get("SCHEDULE_ID")
+
+        if self.schedule_id:
+            self.facility_id: Optional[str] = config_data.get("FACILITY_ID")
+            self.asc_facility_id: Optional[str] = config_data.get("ASC_FACILITY_ID")
+        else:
+            self.facility_id = None
+            self.asc_facility_id = None
 
         self.__save()
 
@@ -266,20 +279,33 @@ class Config:
         self.asc_facility_id = self.__choose_location(locations, "asc")
         self.__save()
 
+    def set_schedule_id(self, schedule_ids: dict[str, Appointment]):
+        self.schedule_id = Config.__choose(
+            schedule_ids,
+            f"Choose schedule id (enter number): \n" +
+            "\n".join([x[0] + "  " + x[1].description for x in schedule_ids.items()]) + "\n"
+        )
+        self.__save()
+
     @staticmethod
     def __choose_location(locations: dict[str, str], location_name: str) -> str:
-        if len(locations) == 1:
-            return next(iter(locations))
+        return Config.__choose(
+            locations,
+            f"Choose {location_name} location (enter number): \n" +
+            "\n".join([x[0] + "  " + x[1] for x in locations.items()]) + "\n"
+        )
 
-        facility_id = None
-        while not facility_id:
-            facility_id = input(
-                f"Choose {location_name} location (enter number): \n" +
-                "\n".join([x[0] + "  " + x[1] for x in locations.items()]) + "\n"
-            )
-            if facility_id not in locations:
-                facility_id = None
-        return facility_id
+    @staticmethod
+    def __choose(values: dict, message: str) -> str:
+        if len(values) == 1:
+            return next(iter(values))
+
+        value = None
+        while not value:
+            value = input(message)
+            if value not in values:
+                value = None
+        return value
 
     def __save(self):
         with open(self.config_file, "w") as f:
@@ -292,6 +318,7 @@ class Config:
                 f"\nMAX_DATE={self.max_date.strftime(DATE_FORMAT) if self.max_date else NONE}"
                 f"\nNEED_ASC={self.need_asc}"
                 f"\nASC_FACILITY_ID={self.asc_facility_id}"
+                f"\nSCHEDULE_ID={self.schedule_id}"
             )
 
 
@@ -303,7 +330,6 @@ class Bot:
         self.url = f"https://{HOST}/en-{config.country}/niv"
 
         self.appointment_datetime: Optional[datetime] = None
-        self.schedule_id: Optional[str] = None
         self.csrf: Optional[str] = None
         self.cookie: Optional[str] = None
         self.session = requests.session()
@@ -397,17 +423,37 @@ class Bot:
         )
         response.raise_for_status()
 
-        match = re.search(
-            rf"href=\"/en-{self.config.country}/niv/schedule/(\d+)/continue_actions\">Continue</a>",
-            response.text
-        )
-        if not match:
-            raise NoScheduleIdException()
-        self.schedule_id = match.group(1)
+        applications = BeautifulSoup(response.text, HTML_PARSER).findAll("div", {"class": "application"})
 
-        match = re.search(r"\d{1,2} \w+?, \d{4}, \d{1,2}:\d{1,2}", response.text)
-        if match:
-            self.appointment_datetime = datetime.strptime(match.group(0), "%d %B, %Y, %H:%M")
+        if not applications:
+            raise NoScheduleIdException()
+
+        schedule_ids = dict()
+
+        for application in applications:
+            schedule_id = re.search(r"\d+", str(application.find("a")))
+
+            if not schedule_id:
+                continue
+
+            schedule_id = schedule_id.group(0)
+            description = ' '.join([x.get_text() for x in application.findAll("td")][0:4])
+            appointment_datetime = application.find("p", {"class": "consular-appt"})
+            if appointment_datetime:
+                appointment_datetime = re.search(r"\d{1,2} \w+?, \d{4}, \d{1,2}:\d{1,2}",
+                                                 appointment_datetime.get_text())
+
+                if appointment_datetime:
+                    appointment_datetime = datetime.strptime(appointment_datetime.group(0), "%d %B, %Y, %H:%M")
+                else:
+                    appointment_datetime = None
+
+            schedule_ids[schedule_id] = Appointment(schedule_id, description, appointment_datetime)
+
+        if not self.config.schedule_id:
+            self.config.set_schedule_id(schedule_ids)
+
+        self.appointment_datetime = schedule_ids[self.config.schedule_id].appointment_datetime
 
         if self.appointment_datetime and self.appointment_datetime.date() <= self.config.min_date:
             raise AppointmentDateLowerMinDate()
@@ -480,12 +526,12 @@ class Bot:
     def load_change_appointment_page(self) -> Response:
         self.logger("Get new appointment")
         response = self.session.get(
-            f"{self.url}/schedule/{self.schedule_id}/appointment",
+            f"{self.url}/schedule/{self.config.schedule_id}/appointment",
             headers={
                 **self.headers(),
                 **DOCUMENT_HEADERS,
                 **SEC_FETCH_USER_HEADERS,
-                REFERER: f"{self.url}/schedule/{self.schedule_id}/continue_actions"
+                REFERER: f"{self.url}/schedule/{self.config.schedule_id}/continue_actions"
             }
         )
         response.raise_for_status()
@@ -494,12 +540,12 @@ class Bot:
     def get_available_dates(self) -> list[str]:
         self.logger("Get available date")
         response = self.session.get(
-            f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
+            f"{self.url}/schedule/{self.config.schedule_id}/appointment/days/"
             f"{self.config.facility_id}.json?appointments[expedite]=false",
             headers={
                 **self.headers(),
                 **JSON_HEADERS,
-                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+                REFERER: f"{self.url}/schedule/{self.config.schedule_id}/appointment"
             }
         )
         response.raise_for_status()
@@ -513,12 +559,12 @@ class Bot:
     def get_available_times(self, available_date: str) -> list[str]:
         self.logger("Get available time")
         response = self.session.get(
-            f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.facility_id}.json?"
+            f"{self.url}/schedule/{self.config.schedule_id}/appointment/times/{self.config.facility_id}.json?"
             f"date={available_date}&appointments[expedite]=false",
             headers={
                 **self.headers(),
                 **JSON_HEADERS,
-                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+                REFERER: f"{self.url}/schedule/{self.config.schedule_id}/appointment"
             }
         )
         response.raise_for_status()
@@ -535,7 +581,7 @@ class Bot:
     ) -> list[str]:
         self.logger("Get available dates ASC")
         response = self.session.get(
-            f"{self.url}/schedule/{self.schedule_id}/appointment/days/"
+            f"{self.url}/schedule/{self.config.schedule_id}/appointment/days/"
             f"{self.config.asc_facility_id}.json?&consulate_id={self.config.facility_id}"
             f"&consulate_date={available_date if available_date else ''}"
             f"&consulate_time={available_time if available_time else ''}"
@@ -543,7 +589,7 @@ class Bot:
             headers={
                 **self.headers(),
                 **JSON_HEADERS,
-                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+                REFERER: f"{self.url}/schedule/{self.config.schedule_id}/appointment"
             }
         )
         response.raise_for_status()
@@ -561,15 +607,15 @@ class Bot:
     ) -> list[str]:
         self.logger("Get available times ASC")
         response = self.session.get(
-            f"{self.url}/schedule/{self.schedule_id}/appointment/times/{self.config.asc_facility_id}.json?"
-            f"date={asc_available_date}&consulate_id={self.schedule_id}"
+            f"{self.url}/schedule/{self.config.schedule_id}/appointment/times/{self.config.asc_facility_id}.json?"
+            f"date={asc_available_date}&consulate_id={self.config.schedule_id}"
             f"&consulate_date={available_date if available_date else ''}"
             f"&consulate_time={available_time if available_time else ''}"
             f"&appointments[expedite]=false",
             headers={
                 **self.headers(),
                 **JSON_HEADERS,
-                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+                REFERER: f"{self.url}/schedule/{self.config.schedule_id}/appointment"
             }
         )
         response.raise_for_status()
@@ -609,14 +655,14 @@ class Bot:
         self.logger(f"Request {body}")
 
         return self.session.post(
-            f"{self.url}/schedule/{self.schedule_id}/appointment",
+            f"{self.url}/schedule/{self.config.schedule_id}/appointment",
             headers={
                 **self.headers(),
                 **DOCUMENT_HEADERS,
                 **SEC_FETCH_USER_HEADERS,
                 CONTENT_TYPE: "application/x-www-form-urlencoded",
                 "Origin": f"https://{HOST}",
-                REFERER: f"{self.url}/schedule/{self.schedule_id}/appointment"
+                REFERER: f"{self.url}/schedule/{self.config.schedule_id}/appointment"
             },
             data=urlencode(body)
         )

@@ -32,7 +32,6 @@ pyinstaller -F main.py
     - carefully set the maximum and minimum interview dates
 3. Bot has ASC registration, but it may not work. Make pull request, if you fixed it
 4. Join [Telegram group](https://t.me/u_s_a_visa_bot)
-5. Bot can work only with one person in account
 
 ## Donation
 
