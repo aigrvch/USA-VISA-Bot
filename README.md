@@ -1,23 +1,26 @@
 # Usa VISA appointment bot for [AIS](https://ais.usvisa-info.com/) region
 
-Use this bot on your own risk
+### !!Use this bot on your own risk!!
 
-## Requirements
+## Using
+
+- [Download](https://github.com/aigrvch/USA-VISA-Bot/releases)
+- Run exe file and follow instruction
+
+## Run as python script
+
+### Requirements 
 
 - python >= 3.10 (Wasn't tested on python < 3.10)
 
-## Download .exe
-
-[Download](https://github.com/aigrvch/USA-VISA-Bot/releases)
-
-## Usage
+### Run 
 
 ```sh
 pip install -r requirements.txt
 python main.py
 ```
 
-## Build exe
+### Build exe
 
 ```sh
 pip install pyinstaller
@@ -35,8 +38,5 @@ pyinstaller -F main.py
 
 ## Donation
 
-- USDT TON - UQB_R5AkOP8YR9jPrc6FRxeJYdTsojgsyeZkz9IEQx7fVJaH
-- USDT TRC20 - TC2UQeCxDiCP2RGAQvuxN3yzosghnntfpL
-- TON - UQB_R5AkOP8YR9jPrc6FRxeJYdTsojgsyeZkz9IEQx7fVJaH
+- TON / USDT(TON) - UQB_R5AkOP8YR9jPrc6FRxeJYdTsojgsyeZkz9IEQx7fVJaH
 - BTC - 1PAnKCKskMJvaBcvJmepaU2QkUFZN1mh3b
-- ETH - 0x5C7381c01b69D643FBF84fceFB9F9F39E65B7765
